@@ -6,6 +6,9 @@ An intelligent agentic workflow system for automated bug triaging that integrate
 
 - **Jira Integration**: Pull bugs directly from Jira using Model Context Protocol (MCP)
 - **AI-Powered Analysis**: Leverage Claude SDK to analyze repository code and identify bug locations
+- **Contextual Bug Analysis**: Automatically searches log history for similar bugs to provide contextual fixes
+- **Semantic Search**: Uses embeddings and OpenSearch for intelligent similarity matching
+- **Log History**: Maintains searchable history of all bug analyses with vector embeddings
 - **Automated Reports**: Generate comprehensive reports with file names, line numbers, issues, and resolutions
 - **Flexible Configuration**: Easy setup with environment variables
 - **Multiple Output Formats**: JSON and Markdown report formats
@@ -22,17 +25,25 @@ An intelligent agentic workflow system for automated bug triaging that integrate
 2. **Code Analysis Agent** (`code_analyzer.py`)
    - Scans repository for code files
    - Uses Claude AI to analyze code
+   - Leverages historical context for consistent fixes
    - Maps bugs to specific code locations
    - Identifies issues and suggests fixes
 
-3. **Report Generator** (`report_generator.py`)
+3. **Log History Manager** (`log_history_manager.py`)
+   - Maintains searchable log of all analyses
+   - Generates embeddings for semantic search
+   - Finds similar bugs for contextual analysis
+   - Stores in OpenSearch with k-NN indexing
+
+4. **Report Generator** (`report_generator.py`)
    - Creates consolidated reports
    - Generates JSON and Markdown formats
    - Provides severity breakdowns and summaries
 
-4. **Orchestrator** (`main.py`)
+5. **Orchestrator** (`main.py`)
    - Coordinates the entire workflow
    - Manages the bug triaging process
+   - Searches history before analysis
    - Handles batch processing and single bug analysis
 
 ## Setup
@@ -68,9 +79,27 @@ REPO_PATH=./code_files
 
 # Report Configuration
 REPORT_OUTPUT_PATH=./reports
+
+# Log History & Contextual Analysis (Optional)
+ENABLE_LOG_HISTORY=true
+OPENSEARCH_HOST=localhost
+OPENSEARCH_PORT=9200
+OPENSEARCH_INDEX=bug_analysis_logs
+EMBEDDING_MODEL=sentence-transformers/multi-qa-MiniLM-L6-cos-v1
 ```
 
-### 3. Get API Credentials
+### 3. Setup OpenSearch (Optional - for Log History)
+
+To enable contextual bug analysis with historical context:
+
+```bash
+# Download and run OpenSearch
+docker run -d -p 9200:9200 -p 9600:9600 -e "discovery.type=single-node" opensearchproject/opensearch:2.11.1
+```
+
+Or use a local installation. The system will automatically create the index with proper mappings.
+
+### 4. Get API Credentials
 
 #### Jira API Token
 1. Go to https://id.atlassian.com/manage-profile/security/api-tokens

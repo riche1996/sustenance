@@ -13,32 +13,48 @@
 │  - Workflow coordination                                         │
 │  - Progress tracking                                             │
 │  - Error handling                                                │
-└─────────────────┬───────────────────────┬───────────────────────┘
-                  │                       │
-         ┌────────▼────────┐     ┌────────▼────────┐
-         │  Jira MCP       │     │  Code Analyzer   │
-         │  (jira_mcp.py)  │     │  (code_analyzer) │
-         └────────┬────────┘     └────────┬────────┘
-                  │                       │
-                  │                       │
-         ┌────────▼────────┐     ┌────────▼────────┐
-         │  Jira Cloud     │     │  Claude API      │
-         │  (External)     │     │  (Anthropic)     │
-         └─────────────────┘     └──────────────────┘
-                  │
-                  │
-         ┌────────▼────────────────────────┐
-         │   Report Generator               │
-         │   (report_generator.py)          │
-         │   - JSON reports                 │
-         │   - Markdown reports             │
-         └────────┬─────────────────────────┘
-                  │
-                  ▼
-         ┌─────────────────┐
-         │  Reports/        │
-         │  Output Files    │
-         └─────────────────┘
+│  - Log history management                                        │
+└───┬─────────────┬───────────────────────┬───────────────────────┘
+    │             │                       │
+┌───▼────┐  ┌─────▼──────┐      ┌────────▼────────┐
+│  Jira  │  │   Code     │      │  Log History    │
+│  MCP   │  │  Analyzer  │      │  Manager        │
+│        │  │            │      │  (NEW)          │
+└───┬────┘  └─────┬──────┘      └────────┬────────┘
+    │             │                      │
+    │             │              ┌───────┴───────┐
+    │             │              │               │
+┌───▼────┐  ┌─────▼──────┐  ┌───▼────────┐ ┌───▼──────────┐
+│  Jira  │  │  Claude    │  │ Embedding  │ │  OpenSearch  │
+│  Cloud │  │  API       │  │ Service    │ │  Client      │
+│        │  │ (Anthropic)│  │  (NEW)     │ │  (NEW)       │
+└────────┘  └────────────┘  └────┬───────┘ └───┬──────────┘
+                                 │             │
+                                 │    384-dim  │
+                                 │    vectors  │
+                                 └──────┬──────┘
+                                        │
+                              ┌─────────▼─────────┐
+                              │   OpenSearch DB   │
+                              │  - Bug analyses   │
+                              │  - Embeddings     │
+                              │  - History logs   │
+                              └───────────────────┘
+                                        │
+         ┌──────────────────────────────┴─────────┐
+         │                                        │
+┌────────▼────────────┐              ┌────────────▼──────────┐
+│  Report Generator   │              │  Log Query Tool       │
+│  (report_generator) │              │  (query_log_history)  │
+│  - JSON reports     │              │  - Semantic search    │
+│  - Markdown reports │              │  - History lookup     │
+└────────┬────────────┘              │  - Analytics          │
+         │                           └───────────────────────┘
+         ▼
+┌─────────────────┐
+│  Reports/       │
+│  Output Files   │
+└─────────────────┘
 ```
 
 ## Data Flow
@@ -51,7 +67,11 @@
    │
    ├─► Load Configuration (.env)
    ├─► Connect to Jira
-   └─► Initialize Claude Client
+   ├─► Initialize Claude Client
+   └─► Initialize Log History (NEW)
+       ├─► Connect to OpenSearch
+       ├─► Load Embedding Model
+       └─► Create/Verify Index
    │
    ▼
 3. Scan Repository
@@ -97,7 +117,21 @@
    │   └─► Parse Response
    │       └─ Create Finding objects
    │
-   └─► Store Analysis Results
+   ├─► Store Analysis Results
+   │
+   └─► Log to History (NEW)
+       │
+       ├─► Generate Embedding
+       │   ├─ Combine bug summary
+       │   ├─ Bug description
+       │   └─ Analysis results
+       │   → 384-dim vector
+       │
+       └─► Index to OpenSearch
+           ├─ Bug metadata
+           ├─ Analysis findings
+           ├─ Embedding vector
+           └─ Timestamp
    │
    ▼
 6. Generate Reports
@@ -109,6 +143,13 @@
    │
    ▼
 7. END
+
+Optional: Query Log History
+   │
+   ├─► Semantic Search (by meaning)
+   ├─► Get Bug History (by ID)
+   ├─► Find Duplicates (similarity)
+   └─► View Statistics
 ```
 
 ## Component Interaction Sequence

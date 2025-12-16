@@ -52,8 +52,33 @@ ANTHROPIC_API_KEY=your_anthropic_key
 # Optional
 REPO_PATH=./code_files
 REPORT_OUTPUT_PATH=./reports
-CLAUDE_MODEL=claude-3-5-sonnet-20241022
+CLAUDE_MODEL=claude-sonnet-4-20250514
+
+# Log History & Contextual Analysis (Optional)
+ENABLE_LOG_HISTORY=true
+OPENSEARCH_HOST=localhost
+OPENSEARCH_PORT=9200
+OPENSEARCH_INDEX=bug_analysis_logs
+EMBEDDING_MODEL=sentence-transformers/multi-qa-MiniLM-L6-cos-v1
 ```
+
+## 🔍 Contextual Analysis Feature
+
+When log history is enabled, the system automatically:
+1. **Searches** for similar bugs in history (≥70% similarity)
+2. **Provides** Claude with historical context from past fixes
+3. **Ensures** consistent solutions across similar issues
+4. **Learns** from previous analyses for better results
+
+```bash
+# During analysis, you'll see:
+🔍 Searching log history for similar bugs...
+✓ Found 2 similar bug(s) in history
+
+# Claude then receives context from those similar bugs
+```
+
+See [docs/CONTEXTUAL_ANALYSIS.md](CONTEXTUAL_ANALYSIS.md) for details.
 
 ## 💻 Python API Examples
 

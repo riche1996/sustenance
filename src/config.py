@@ -25,6 +25,15 @@ class Config:
     # Report Configuration
     REPORT_OUTPUT_PATH = Path(os.getenv("REPORT_OUTPUT_PATH", "./reports"))
     
+    # OpenSearch Configuration
+    OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "localhost")
+    OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
+    OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "bug_analysis_logs")
+    
+    # Embedding Configuration
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    ENABLE_LOG_HISTORY = os.getenv("ENABLE_LOG_HISTORY", "true").lower() == "true"
+    
     @classmethod
     def validate(cls):
         """Validate that required configuration is present."""

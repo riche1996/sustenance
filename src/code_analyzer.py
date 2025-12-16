@@ -70,7 +70,8 @@ class CodeAnalysisAgent:
         bug_description: str,
         bug_key: str,
         code_files: List[CodeFile],
-        max_files_per_analysis: int = 3  # Reduced from 10 to 3 for faster processing
+        max_files_per_analysis: int = 3,  # Reduced from 10 to 3 for faster processing
+        historical_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Analyze code files to identify potential bug locations and fixes.
@@ -111,7 +112,7 @@ class CodeAnalysisAgent:
             
             for i in range(0, len(files), max_files_per_analysis):
                 batch = files[i:i + max_files_per_analysis]
-                findings = self._analyze_batch(bug_description, bug_key, batch)
+                findings = self._analyze_batch(bug_description, bug_key, batch, historical_context)
                 all_findings.extend(findings)
         
         return {
@@ -125,7 +126,8 @@ class CodeAnalysisAgent:
         self, 
         bug_description: str,
         bug_key: str,
-        code_files: List[CodeFile]
+        code_files: List[CodeFile],
+        historical_context: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Analyze a batch of code files."""
         # Build the analysis prompt with size limits
@@ -148,6 +150,7 @@ class CodeAnalysisAgent:
 
 Bug Report ({bug_key}):
 {bug_description}
+{historical_context if historical_context else ''}
 
 Below are {len(code_files)} code files from the repository. Please analyze them to:
 1. Identify which files are likely related to this bug
