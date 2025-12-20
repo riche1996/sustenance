@@ -1,14 +1,34 @@
-# Bug Triage & Analysis System
+# Sustenance - Intelligent Issue Management System
 
-An intelligent agentic workflow system for automated bug triaging that integrates with Jira and uses Claude AI for code analysis.
+An intelligent agentic workflow system for automated bug triaging that integrates with multiple trackers (Jira, GitHub, TFS) and uses Claude AI for code analysis.
+
+## ⭐ Latest Update (December 2025)
+
+**Major Enhancement**: Comprehensive GitHub Integration with 47 actions!
+
+We've expanded GitHub capabilities from 10 to **47 total actions**, adding:
+- ✅ Pull Requests management (create, merge, review, diff)
+- ✅ Labels & Milestones management
+- ✅ Branch operations (create, delete, compare)
+- ✅ File operations (read, search code)
+- ✅ Collaborators management
+- ✅ Releases & Tags
+- ✅ Enhanced repository info (contributors, commits)
+
+**See**: `GITHUB_IMPLEMENTATION_2025.md` and `docs/GITHUB_CAPABILITIES.md` for full details.
 
 ## Features
 
-- **Jira Integration**: Pull bugs directly from Jira using Model Context Protocol (MCP)
-- **AI-Powered Analysis**: Leverage Claude SDK to analyze repository code and identify bug locations
-- **Contextual Bug Analysis**: Automatically searches log history for similar bugs to provide contextual fixes
+- **Multi-Tracker Support**: Jira, GitHub, and TFS integration via web interface
+- **GitHub Integration**: 47 comprehensive actions for complete GitHub workflow
+  - Issues, Pull Requests, Labels, Milestones
+  - Branches, Commits, Files, Code Search
+  - Collaborators, Releases, Tags
+- **Natural Language Interface**: Chat-based interaction powered by Claude AI
+- **Session Management**: Persistent chat sessions with dynamic titles
+- **AI-Powered Analysis**: Leverage Claude SDK to analyze repository code
+- **Contextual Bug Analysis**: Automatically searches log history for similar bugs
 - **Semantic Search**: Uses embeddings and OpenSearch for intelligent similarity matching
-- **Log History**: Maintains searchable history of all bug analyses with vector embeddings
 - **Automated Reports**: Generate comprehensive reports with file names, line numbers, issues, and resolutions
 - **Flexible Configuration**: Easy setup with environment variables
 - **Multiple Output Formats**: JSON and Markdown report formats

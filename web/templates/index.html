@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bug Tracker Agent System</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .tracker-badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        
+        .btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        input, select {
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            outline: none;
+            transition: border 0.3s;
+        }
+        
+        input:focus, select:focus {
+            border-color: #667eea;
+        }
+        
+        .bugs-container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+        
+        .bug-card {
+            border: 2px solid #f0f0f0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        
+        .bug-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.2);
+            transform: translateX(5px);
+        }
+        
+        .bug-id {
+            font-weight: bold;
+            color: #667eea;
+            font-size: 16px;
+        }
+        
+        .bug-title {
+            font-size: 18px;
+            margin: 10px 0;
+            color: #333;
+        }
+        
+        .bug-meta {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .status-open { background: #fff3cd; color: #856404; }
+        .status-closed { background: #d4edda; color: #155724; }
+        .status-active { background: #cce5ff; color: #004085; }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #667eea;
+            font-size: 18px;
+        }
+        
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            width: 90%;
+        }
+        
+        .modal-header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .close-btn {
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            color: #999;
+            cursor: pointer;
+        }
+        
+        .close-btn:hover {
+            color: #333;
+        }
+        
+        .agent-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        
+        .capability-list {
+            list-style: none;
+            padding: 10px 0;
+        }
+        
+        .capability-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .capability-list li:before {
+            content: "✓ ";
+            color: #28a745;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Bug Tracker Agent System</h1>
+            <p style="margin: 10px 0; color: #666;">Intelligent Agent-Based Bug Tracking Interface</p>
+            <span class="tracker-badge">📡 {{ tracker }} Connected</span>
+            <button class="btn btn-secondary" onclick="showAgentInfo()" style="float: right; margin-top: -5px;">🔍 Agent Info</button>
+        </div>
+        
+        <div class="controls">
+            <input type="number" id="maxResults" placeholder="Max Results" value="10" min="1" max="50" style="width: 120px;">
+            <select id="stateFilter" style="width: 150px;">
+                <option value="open">Open</option>
+                <option value="closed">Closed</option>
+                <option value="all">All</option>
+            </select>
+            <button class="btn" onclick="fetchBugs()">🔍 Fetch Bugs</button>
+            <button class="btn btn-secondary" onclick="refreshPage()">🔄 Refresh</button>
+        </div>
+        
+        <div id="errorContainer"></div>
+        
+        <div class="bugs-container">
+            <h2 style="margin-bottom: 20px; color: #333;">Bug List</h2>
+            <div id="bugsContainer">
+                <p style="color: #999; text-align: center; padding: 40px;">
+                    Click "Fetch Bugs" to load issues from {{ tracker }}
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for bug details -->
+    <div id="bugModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="close-btn" onclick="closeModal()">&times;</span>
+                <h2 id="modalTitle">Bug Details</h2>
+            </div>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+    
+    <!-- Modal for agent info -->
+    <div id="agentModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="close-btn" onclick="closeAgentModal()">&times;</span>
+                <h2>Agent Information</h2>
+            </div>
+            <div id="agentModalBody"></div>
+        </div>
+    </div>
+    
+    <script>
+        function fetchBugs() {
+            const maxResults = document.getElementById('maxResults').value;
+            const state = document.getElementById('stateFilter').value;
+            
+            document.getElementById('bugsContainer').innerHTML = '<div class="loading">⏳ Loading bugs...</div>';
+            document.getElementById('errorContainer').innerHTML = '';
+            
+            fetch(`/api/bugs?max_results=${maxResults}&state=${state}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayBugs(data.data, data.count);
+                    } else {
+                        showError(data.error);
+                    }
+                })
+                .catch(error => {
+                    showError('Failed to fetch bugs: ' + error.message);
+                });
+        }
+        
+        function displayBugs(bugs, count) {
+            const container = document.getElementById('bugsContainer');
+            
+            if (count === 0) {
+                container.innerHTML = '<p style="color: #999; text-align: center; padding: 40px;">No bugs found</p>';
+                return;
+            }
+            
+            let html = '';
+            bugs.forEach(bug => {
+                const status = bug.status || bug.state || 'Unknown';
+                const statusClass = status.toLowerCase().includes('open') || status.toLowerCase().includes('to do') ? 'status-open' : 
+                                  status.toLowerCase().includes('closed') || status.toLowerCase().includes('done') ? 'status-closed' : 
+                                  'status-active';
+                
+                html += `
+                    <div class="bug-card" onclick="showBugDetails('${bug.id}')">
+                        <div class="bug-id">#${bug.id}</div>
+                        <div class="bug-title">${escapeHtml(bug.title)}</div>
+                        <div class="bug-meta">
+                            <span class="status-badge ${statusClass}">${status}</span>
+                            ${bug.priority ? `<span>Priority: ${bug.priority}</span>` : ''}
+                            ${bug.assignee ? `<span>👤 ${bug.assignee}</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function showBugDetails(bugId) {
+            document.getElementById('bugModal').classList.add('active');
+            document.getElementById('modalBody').innerHTML = '<div class="loading">⏳ Loading details...</div>';
+            
+            fetch(`/api/bugs/${bugId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayBugDetails(data.data);
+                    } else {
+                        document.getElementById('modalBody').innerHTML = `<div class="error">${data.error}</div>`;
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('modalBody').innerHTML = `<div class="error">Failed to load details: ${error.message}</div>`;
+                });
+        }
+        
+        function displayBugDetails(bug) {
+            const status = bug.status || bug.state || 'Unknown';
+            let html = `
+                <div class="agent-info">
+                    <h3 style="margin-bottom: 15px;">Bug #${bug.id}</h3>
+                    <p><strong>Title:</strong> ${escapeHtml(bug.title)}</p>
+                    <p><strong>Status:</strong> ${status}</p>
+                    ${bug.priority ? `<p><strong>Priority:</strong> ${bug.priority}</p>` : ''}
+                    ${bug.severity ? `<p><strong>Severity:</strong> ${bug.severity}</p>` : ''}
+                    ${bug.assignee ? `<p><strong>Assignee:</strong> ${bug.assignee}</p>` : ''}
+                    ${bug.labels && bug.labels.length ? `<p><strong>Labels:</strong> ${bug.labels.join(', ')}</p>` : ''}
+                    <p><strong>Created:</strong> ${new Date(bug.created).toLocaleString()}</p>
+                    ${bug.url ? `<p><strong>URL:</strong> <a href="${bug.url}" target="_blank">${bug.url}</a></p>` : ''}
+                </div>
+                
+                <h4 style="margin: 20px 0 10px 0;">Description</h4>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; white-space: pre-wrap;">
+                    ${escapeHtml(bug.description || 'No description provided')}
+                </div>
+            `;
+            
+            document.getElementById('modalBody').innerHTML = html;
+        }
+        
+        function showAgentInfo() {
+            document.getElementById('agentModal').classList.add('active');
+            document.getElementById('agentModalBody').innerHTML = '<div class="loading">⏳ Loading agent info...</div>';
+            
+            fetch('/api/agent/info')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('agentModalBody').innerHTML = `<div class="error">${data.error}</div>`;
+                    } else {
+                        let html = `
+                            <div class="agent-info">
+                                <h3>${data.name}</h3>
+                                <p><strong>Tracker:</strong> ${data.tracker.toUpperCase()}</p>
+                            </div>
+                            
+                            <h4 style="margin: 20px 0 10px 0;">Capabilities</h4>
+                            <ul class="capability-list">
+                                ${data.capabilities.map(cap => `<li>${cap}</li>`).join('')}
+                            </ul>
+                        `;
+                        document.getElementById('agentModalBody').innerHTML = html;
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('agentModalBody').innerHTML = `<div class="error">Failed to load agent info: ${error.message}</div>`;
+                });
+        }
+        
+        function closeModal() {
+            document.getElementById('bugModal').classList.remove('active');
+        }
+        
+        function closeAgentModal() {
+            document.getElementById('agentModal').classList.remove('active');
+        }
+        
+        function refreshPage() {
+            location.reload();
+        }
+        
+        function showError(message) {
+            document.getElementById('errorContainer').innerHTML = `<div class="error">❌ ${message}</div>`;
+            document.getElementById('bugsContainer').innerHTML = '';
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Close modals when clicking outside
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.classList.remove('active');
+            }
+        }
+    </script>
+</body>
+</html>

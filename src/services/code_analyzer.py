@@ -5,7 +5,7 @@ import httpx
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from anthropic import Anthropic
-from config import Config
+from src.config import Config
 
 
 class CodeFile:

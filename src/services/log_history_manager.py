@@ -2,9 +2,9 @@
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
-from opensearch_client import OpenSearchClient
-from embedding_service import EmbeddingService
-from jira_mcp import JiraIssue
+from src.services.opensearch_client import OpenSearchClient
+from src.services.embedding_service import EmbeddingService
+from src.trackers.jira_client import JiraIssue
 
 logger = logging.getLogger(__name__)
 

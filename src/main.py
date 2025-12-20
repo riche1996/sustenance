@@ -3,11 +3,11 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import logging
-from config import Config
-from jira_mcp import JiraMCPServer, JiraIssue
-from code_analyzer import CodeAnalysisAgent, CodeFile
-from report_generator import ReportGenerator
-from log_history_manager import LogHistoryManager
+from src.config import Config
+from src.trackers.jira_client import JiraMCPServer, JiraIssue
+from src.services.code_analyzer import CodeAnalysisAgent, CodeFile
+from src.services.report_generator import ReportGenerator
+from src.services.log_history_manager import LogHistoryManager
 
 
 class BugTriageOrchestrator:

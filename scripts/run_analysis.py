@@ -2,10 +2,15 @@
 Complete working demonstration with actual Jira bugs and repository code analysis.
 This version uses a simpler approach with minimal API calls to avoid timeout issues.
 """
-from jira_mcp import JiraMCPServer
-from code_analyzer import CodeAnalysisAgent
-from report_generator import ReportGenerator
-from config import Config
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.trackers.jira_client import JiraMCPServer
+from src.services.code_analyzer import CodeAnalysisAgent
+from src.services.report_generator import ReportGenerator
+from src.config import Config
 import httpx
 from anthropic import Anthropic
 

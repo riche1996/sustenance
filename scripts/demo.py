@@ -2,10 +2,15 @@
 Demo script to show the bug triaging workflow without Claude API.
 This demonstrates Jira integration and report generation with mock analysis.
 """
-from jira_mcp import JiraMCPServer
-from code_analyzer import CodeAnalysisAgent
-from report_generator import ReportGenerator
-from config import Config
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.trackers.jira_client import JiraMCPServer
+from src.services.code_analyzer import CodeAnalysisAgent
+from src.services.report_generator import ReportGenerator
+from src.config import Config
 
 
 def demo_jira_integration():

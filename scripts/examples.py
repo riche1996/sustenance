@@ -3,7 +3,12 @@ Example usage scenarios for the Bug Triage & Analysis System.
 
 This file demonstrates different ways to use the system.
 """
-from main import BugTriageOrchestrator
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.main import BugTriageOrchestrator
 
 
 def example_full_workflow():

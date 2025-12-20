@@ -3,12 +3,13 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
-from config import Config
-from opensearch_client import OpenSearchClient
-from embedding_service import EmbeddingService
+from src.config import Config
+from src.services.opensearch_client import OpenSearchClient
+from src.services.embedding_service import EmbeddingService
 
 def test_opensearch_connection():
     """Test OpenSearch connection."""

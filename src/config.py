@@ -15,6 +15,20 @@ class Config:
     JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN", "")
     JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "")
     
+    # TFS/Azure DevOps Configuration
+    TFS_URL = os.getenv("TFS_URL", "https://dev.azure.com")
+    TFS_ORGANIZATION = os.getenv("TFS_ORGANIZATION", "")
+    TFS_PROJECT = os.getenv("TFS_PROJECT", "")
+    TFS_PAT = os.getenv("TFS_PAT", "")  # Personal Access Token
+    
+    # GitHub Configuration
+    GITHUB_OWNER = os.getenv("GITHUB_OWNER", "")
+    GITHUB_REPO = os.getenv("GITHUB_REPO", "")
+    GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+    
+    # Bug Tracking System Selection
+    BUG_TRACKER = os.getenv("BUG_TRACKER", "jira")  # jira, tfs, or github
+    
     # Claude API Configuration
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
@@ -37,12 +51,31 @@ class Config:
     @classmethod
     def validate(cls):
         """Validate that required configuration is present."""
+        # Always required
         required_vars = [
-            ("JIRA_URL", cls.JIRA_URL),
-            ("JIRA_EMAIL", cls.JIRA_EMAIL),
-            ("JIRA_API_TOKEN", cls.JIRA_API_TOKEN),
             ("ANTHROPIC_API_KEY", cls.ANTHROPIC_API_KEY),
         ]
+        
+        # Bug tracker specific requirements
+        if cls.BUG_TRACKER == "jira":
+            required_vars.extend([
+                ("JIRA_URL", cls.JIRA_URL),
+                ("JIRA_EMAIL", cls.JIRA_EMAIL),
+                ("JIRA_API_TOKEN", cls.JIRA_API_TOKEN),
+            ])
+        elif cls.BUG_TRACKER == "tfs":
+            required_vars.extend([
+                ("TFS_URL", cls.TFS_URL),
+                ("TFS_ORGANIZATION", cls.TFS_ORGANIZATION),
+                ("TFS_PROJECT", cls.TFS_PROJECT),
+                ("TFS_PAT", cls.TFS_PAT),
+            ])
+        elif cls.BUG_TRACKER == "github":
+            required_vars.extend([
+                ("GITHUB_OWNER", cls.GITHUB_OWNER),
+                ("GITHUB_REPO", cls.GITHUB_REPO),
+                ("GITHUB_TOKEN", cls.GITHUB_TOKEN),
+            ])
         
         missing = [name for name, value in required_vars if not value]
         

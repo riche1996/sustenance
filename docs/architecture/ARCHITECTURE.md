@@ -4,6 +4,39 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
+│           Sustenance - Multi-Tracker Issue Management           │
+└─────────────────────────────────────────────────────────────────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    │       SuperAgent        │
+                    │   (src/agents/agents)   │
+                    │  - Natural language UI  │
+                    │  - Intent recognition   │
+                    │  - Multi-tracker routing│
+                    └─────┬──────┬──────┬──────┘
+                          │      │      │
+           ┌─────────────┘      │      └─────────────┐
+           │                   │                   │
+     ┌─────▼─────┐      ┌─────▼─────┐      ┌─────▼─────┐
+     │  JiraAgent  │      │GitHubAgent │      │  TFSAgent  │
+     │ (50 actions)│      │(47 actions)│      │ (10 actions)│
+     └─────┬──────┘      └─────┬──────┘      └─────┬──────┘
+           │                   │                   │
+     ┌─────▼─────┐      ┌─────▼─────┐      ┌─────▼─────┐
+     │ JiraMCP    │      │ GitHubMCP  │      │  TfsMCP   │
+     │ Server     │      │ Server    │      │  Server   │
+     └─────┬──────┘      └─────┬──────┘      └─────┬──────┘
+           │                   │                   │
+           ▼                   ▼                   ▼
+     ┌───────────┐      ┌───────────┐      ┌───────────┐
+     │Jira Cloud │      │ GitHub API│      │Azure DevOps│
+     └───────────┘      └───────────┘      └───────────┘
+```
+
+## Legacy Orchestrator Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
 │                     Bug Triage & Analysis System                 │
 └─────────────────────────────────────────────────────────────────┘
                                  │
@@ -19,7 +52,7 @@
 ┌───▼────┐  ┌─────▼──────┐      ┌────────▼────────┐
 │  Jira  │  │   Code     │      │  Log History    │
 │  MCP   │  │  Analyzer  │      │  Manager        │
-│        │  │            │      │  (NEW)          │
+│        │  │            │      │                 │
 └───┬────┘  └─────┬──────┘      └────────┬────────┘
     │             │                      │
     │             │              ┌───────┴───────┐
@@ -27,7 +60,7 @@
 ┌───▼────┐  ┌─────▼──────┐  ┌───▼────────┐ ┌───▼──────────┐
 │  Jira  │  │  Claude    │  │ Embedding  │ │  OpenSearch  │
 │  Cloud │  │  API       │  │ Service    │ │  Client      │
-│        │  │ (Anthropic)│  │  (NEW)     │ │  (NEW)       │
+│        │  │ (Anthropic)│  │            │ │              │
 └────────┘  └────────────┘  └────┬───────┘ └───┬──────────┘
                                  │             │
                                  │    384-dim  │
@@ -40,6 +73,7 @@
                               │  - Embeddings     │
                               │  - History logs   │
                               └───────────────────┘
+```
                                         │
          ┌──────────────────────────────┴─────────┐
          │                                        │
@@ -194,24 +228,37 @@ Jira Cloud       Local Repo
 ## Module Dependencies
 
 ```
-main.py
-  ├─► config.py
-  ├─► jira_mcp.py
+src/main.py
+  ├─► src/config.py
+  ├─► src/trackers/jira_client.py
   │     ├─► jira (library)
   │     ├─► pydantic
-  │     └─► config.py
+  │     └─► src/config.py
   │
-  ├─► code_analyzer.py
+  ├─► src/services/code_analyzer.py
   │     ├─► anthropic (library)
   │     ├─► pathlib
-  │     └─► config.py
+  │     └─► src/config.py
   │
-  └─► report_generator.py
-        ├─► json
-        ├─► datetime
-        └─► config.py
+  ├─► src/services/report_generator.py
+  │     ├─► json
+  │     ├─► datetime
+  │     └─► src/config.py
+  │
+  └─► src/services/log_history_manager.py
+        ├─► src/services/opensearch_client.py
+        ├─► src/services/embedding_service.py
+        └─► src/trackers/jira_client.py
 
-config.py
+src/agents/agents.py
+  ├─► src/config.py
+  ├─► src/trackers/factory.py
+  ├─► src/trackers/jira_client.py
+  ├─► src/trackers/github_client.py
+  ├─► src/trackers/tfs_client.py
+  └─► src/services/code_analyzer.py
+
+src/config.py
   ├─► os
   ├─► dotenv
   └─► pathlib
@@ -222,39 +269,73 @@ config.py
 ```
 sustenance/
 │
-├── Core System Files
-│   ├── main.py                    [Orchestrator]
-│   ├── jira_mcp.py               [Jira Integration]
-│   ├── code_analyzer.py          [AI Analysis]
-│   ├── report_generator.py       [Reporting]
-│   └── config.py                 [Configuration]
+├── src/                              [Source Code]
+│   ├── __init__.py
+│   ├── config.py                     [Configuration]
+│   ├── main.py                       [Orchestrator]
+│   │
+│   ├── agents/                       [Agent System]
+│   │   ├── __init__.py
+│   │   └── agents.py                 [SuperAgent, JiraAgent, etc.]
+│   │
+│   ├── trackers/                     [Bug Tracker Integrations]
+│   │   ├── __init__.py
+│   │   ├── factory.py                [BugTrackerFactory]
+│   │   ├── jira_client.py            [Jira Integration - 50 actions]
+│   │   ├── github_client.py          [GitHub Integration - 47 actions]
+│   │   └── tfs_client.py             [TFS/Azure DevOps Integration]
+│   │
+│   └── services/                     [Core Services]
+│       ├── __init__.py
+│       ├── code_analyzer.py          [AI Code Analysis]
+│       ├── embedding_service.py      [Vector Embeddings]
+│       ├── opensearch_client.py      [OpenSearch Integration]
+│       ├── log_history_manager.py    [Analysis History]
+│       └── report_generator.py       [Report Generation]
 │
-├── Helper & Utility Files
-│   ├── examples.py               [Usage Examples]
-│   ├── setup_check.py            [Setup Verification]
-│   └── test_components.py        [Component Tests]
+├── web/                              [Web Application]
+│   ├── __init__.py
+│   ├── app.py                        [Flask Web Interface]
+│   └── templates/
+│       └── chat.html                 [Chat UI]
+│
+├── cli/                              [Command Line Interface]
+│   ├── __init__.py
+│   └── cli.py                        [CLI Application]
+│
+├── tests/                            [Test Suite]
+│   ├── __init__.py
+│   ├── test_components.py            [Component Tests]
+│   ├── test_bug_trackers.py          [Tracker Tests]
+│   └── test_*.py                     [Other Tests]
+│
+├── scripts/                          [Utility Scripts]
+│   ├── demo.py                       [Demo Script]
+│   ├── examples.py                   [Usage Examples]
+│   └── setup_check.py                [Setup Verification]
+│
+├── docs/                             [Documentation]
+│   ├── architecture/                 [System Architecture]
+│   │   └── ARCHITECTURE.md           [This File]
+│   ├── capabilities/                 [Feature Documentation]
+│   │   ├── JIRA_CAPABILITIES.md      [50 Jira Actions]
+│   │   └── GITHUB_CAPABILITIES.md    [47 GitHub Actions]
+│   └── guides/                       [User Guides]
+│       ├── QUICK_REFERENCE.md
+│       └── QUICK_START_TRACKERS.md
+│
+├── data/                             [Runtime Data]
+│   ├── sessions/                     [Chat Sessions]
+│   ├── reports/                      [Generated Reports]
+│   └── repos/                        [Cloned Repositories]
 │
 ├── Configuration Files
-│   ├── .env                      [Credentials - Private]
-│   ├── .env.example             [Template]
-│   ├── requirements.txt         [Dependencies]
-│   └── .gitignore              [Git Ignore]
+│   ├── .env                          [Credentials - Private]
+│   ├── .env.example                  [Template]
+│   ├── requirements.txt              [Dependencies]
+│   └── .gitignore                    [Git Ignore]
 │
-├── Documentation
-│   ├── README.md                [User Guide]
-│   ├── PROJECT_OVERVIEW.md      [System Overview]
-│   └── ARCHITECTURE.md          [This File]
-│
-├── Data Directories
-│   ├── code_files/              [Code to Analyze]
-│   ├── reports/                 [Generated Reports]
-│   └── mcp_server/              [Existing MCP]
-│
-└── Output
-    └── reports/
-        ├── bug_analysis_report_*.json
-        ├── bug_analysis_report_*.md
-        └── {JIRA-KEY}_*.md
+└── README.md                         [User Guide]
 ```
 
 ## Key Design Patterns
@@ -412,5 +493,5 @@ Rate Limiter
 
 ---
 
-**Document Version**: 1.0
-**Last Updated**: December 12, 2025
+**Document Version**: 2.0
+**Last Updated**: December 20, 2025

@@ -5,12 +5,16 @@ Run this to test each component separately.
 import sys
 from pathlib import Path
 
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 
 def test_config():
     """Test configuration loading."""
     print("\n=== Testing Configuration ===")
     try:
-        from config import Config
+        from src.config import Config
         
         print(f"Jira URL: {Config.JIRA_URL}")
         print(f"Jira Project: {Config.JIRA_PROJECT_KEY}")
@@ -30,8 +34,8 @@ def test_jira_mcp():
     """Test Jira MCP server."""
     print("\n=== Testing Jira MCP Server ===")
     try:
-        from jira_mcp import JiraMCPServer
-        from config import Config
+        from src.trackers.jira_client import JiraMCPServer
+        from src.config import Config
         
         jira = JiraMCPServer()
         
@@ -62,7 +66,7 @@ def test_code_analyzer():
     """Test code analyzer."""
     print("\n=== Testing Code Analyzer ===")
     try:
-        from code_analyzer import CodeAnalysisAgent
+        from src.services.code_analyzer import CodeAnalysisAgent
         
         analyzer = CodeAnalysisAgent()
         
@@ -124,7 +128,7 @@ def test_report_generator():
     """Test report generator."""
     print("\n=== Testing Report Generator ===")
     try:
-        from report_generator import ReportGenerator
+        from src.services.report_generator import ReportGenerator
         
         generator = ReportGenerator()
         

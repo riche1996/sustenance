@@ -1,11 +1,16 @@
 """
 Test script to verify Claude API analysis with actual code files.
 """
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import httpx
 from anthropic import Anthropic
-from jira_mcp import JiraMCPServer
-from code_analyzer import CodeAnalysisAgent
-from config import Config
+from src.trackers.jira_client import JiraMCPServer
+from src.services.code_analyzer import CodeAnalysisAgent
+from src.config import Config
 
 def test_single_file_analysis():
     """Test analysis with just one code file."""

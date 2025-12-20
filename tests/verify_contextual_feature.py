@@ -4,8 +4,9 @@ Simple test to verify contextual analysis is integrated.
 import sys
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 print("Testing Contextual Analysis Integration")
 print("="*60)
@@ -13,8 +14,8 @@ print("="*60)
 # Test 1: Check if imports work
 print("\n1. Checking imports...")
 try:
-    from main import BugTriageOrchestrator
-    from code_analyzer import CodeAnalysisAgent
+    from src.main import BugTriageOrchestrator
+    from src.services.code_analyzer import CodeAnalysisAgent
     print("   ✓ All imports successful")
 except ImportError as e:
     print(f"   ✗ Import error: {e}")
