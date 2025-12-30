@@ -34,8 +34,9 @@ class JiraAgent(BaseAgent):
         super().__init__("JiraAgent")
         self.jira = JiraMCPServer()
         self.capabilities = [
-            # Issue Management (12)
+            # Issue Management (13)
             "fetch_bugs",
+            "fetch_issues",  # Alias for fetch_bugs - supports generic "pull issues" queries
             "get_bug_details",
             "create_issue",
             "edit_issue",
@@ -99,13 +100,35 @@ class JiraAgent(BaseAgent):
             "get_subtasks"
         ]
     
+    def set_progress_callback(self, callback):
+        """Set progress callback to propagate to Jira client."""
+        self.jira.set_progress_callback(callback)
+    
     def execute(self, action: str, **kwargs) -> Dict[str, Any]:
         """Execute Jira-specific action."""
         try:
             # ==== ISSUE MANAGEMENT ====
-            if action == "fetch_bugs":
+            if action == "fetch_bugs" or action == "fetch_issues":
+                # Support both 'status' and 'state' parameters (state is GitHub-style)
+                status_param = kwargs.get('status') or kwargs.get('state')
+                
+                # Handle status parameter - convert to list format for Jira
+                # Map GitHub-style states to Jira statuses or ignore invalid ones
+                status = None
+                if status_param:
+                    status_lower = status_param.lower() if isinstance(status_param, str) else None
+                    
+                    # "all" or "open"/"closed" (GitHub-style) should not filter by status in Jira
+                    # because Jira uses different status names like "To Do", "In Progress", "Done"
+                    if status_lower in ['all', 'open', 'closed']:
+                        status = None  # Don't filter - return all statuses
+                    elif isinstance(status_param, str):
+                        status = [status_param]  # Use as-is if it's a specific Jira status
+                    elif isinstance(status_param, list):
+                        status = status_param
+                
                 bugs = self.jira.get_bugs(
-                    status=kwargs.get('status'),
+                    status=status,
                     max_results=kwargs.get('max_results', 10),
                     issue_type=kwargs.get('issue_type')
                 )
@@ -679,6 +702,11 @@ class TfsAgent(BaseAgent):
             "get_work_item_updates"
         ]
     
+    def set_progress_callback(self, callback):
+        """Set progress callback to propagate to TFS client."""
+        if hasattr(self.tfs, 'set_progress_callback'):
+            self.tfs.set_progress_callback(callback)
+    
     def execute(self, action: str, **kwargs) -> Dict[str, Any]:
         """Execute TFS-specific action."""
         try:
@@ -1180,6 +1208,7 @@ class GitHubAgent(BaseAgent):
         self.capabilities = [
             # Issue Management
             "fetch_bugs",
+            "fetch_issues",  # Fetch all issues with pagination (supports large results)
             "get_bug_details",
             "create_issue",
             "edit_issue",
@@ -1231,19 +1260,37 @@ class GitHubAgent(BaseAgent):
             "create_tag"
         ]
     
+    def set_progress_callback(self, callback):
+        """Set progress callback to propagate to GitHub client."""
+        self.github.set_progress_callback(callback)
+    
     def execute(self, action: str, **kwargs) -> Dict[str, Any]:
         """Execute GitHub-specific action."""
         try:
             if action == "fetch_bugs":
-                bugs = self.github.get_bugs(
+                # Use get_issues with pagination support for large results
+                bugs = self.github.get_issues(
                     state=kwargs.get('state', 'open'),
-                    labels=kwargs.get('labels'),
+                    labels=kwargs.get('labels', ['type: bug']),  # Default to bug label
                     max_results=kwargs.get('max_results', 10)
                 )
                 return {
                     "success": True,
                     "data": [self._format_bug(bug) for bug in bugs],
                     "count": len(bugs)
+                }
+            
+            elif action == "fetch_issues":
+                # Fetch all issues (not just bugs) with pagination
+                issues = self.github.get_issues(
+                    state=kwargs.get('state', 'open'),
+                    labels=kwargs.get('labels'),  # No default label filter
+                    max_results=kwargs.get('max_results', 10)  # Default to 10 for generic queries
+                )
+                return {
+                    "success": True,
+                    "data": [self._format_bug(issue) for issue in issues],
+                    "count": len(issues)
                 }
             
             elif action == "get_bug_details":
@@ -2295,9 +2342,19 @@ class CodeAnalysisAgentWrapper(BaseAgent):
             "scan_repository",
             "analyze_with_context"
         ]
+        self.progress_callback = None
+    
+    def set_progress_callback(self, callback):
+        """Set progress callback for streaming updates."""
+        self.progress_callback = callback
+        self.analyzer.set_progress_callback(callback)
     
     def execute(self, action: str, **kwargs) -> Dict[str, Any]:
         """Execute code analysis action."""
+        # Set progress callback if provided in kwargs
+        if 'progress_callback' in kwargs:
+            self.set_progress_callback(kwargs.pop('progress_callback'))
+        
         try:
             if action == "scan_repository":
                 extensions = kwargs.get('extensions', ['.py', '.java', '.js', '.ts'])
@@ -2454,6 +2511,25 @@ class SuperAgent:
         print("INITIALIZING SUSTENANCE AGENTS", flush=True)
         print("="*70, flush=True)
         
+        # Initialize Issue History Service for embeddings
+        self.issue_history = None
+        try:
+            from src.services.issue_history_service import IssueHistoryService
+            from src.services.opensearch_client import OpenSearchClient
+            from src.services.embedding_service import EmbeddingService
+            
+            # Try to initialize OpenSearch and Embedding services
+            opensearch = OpenSearchClient(
+                host=Config.OPENSEARCH_HOST,
+                port=Config.OPENSEARCH_PORT
+            )
+            embedding = EmbeddingService(model_name=Config.EMBEDDING_MODEL)
+            self.issue_history = IssueHistoryService(opensearch, embedding)
+            print(f"✓ Initialized IssueHistoryService (OpenSearch + Embeddings)", flush=True)
+        except Exception as e:
+            print(f"ℹ️  Issue history service not available: {e}", flush=True)
+            self.issue_history = None
+        
         # Try to initialize Jira if credentials are available
         print(f"\nChecking Jira credentials...", flush=True)
         print(f"  JIRA_URL: {Config.JIRA_URL}", flush=True)
@@ -2507,61 +2583,135 @@ class SuperAgent:
             print(f"ℹ️  Tracker selection will be dynamic based on your query", flush=True)
     
     def chat_stream(self, message: str, session_id: str = "default"):
-        """Process natural language message with streaming response.
+        """Process natural language message with streaming response and intermediate steps.
         
         Args:
             message: Natural language message from user
             session_id: Session identifier for conversation history tracking
             
         Yields:
-            JSON chunks of the streaming response
+            JSON chunks of the streaming response including intermediate steps
         """
         import json
-        from anthropic import Anthropic
+        import time
+        import threading
+        import queue
+        
+        # Create a queue for progress messages
+        progress_queue = queue.Queue()
+        result_container = {"result": None, "error": None}
+        
+        def progress_callback(msg: str):
+            """Callback to receive progress updates."""
+            progress_queue.put(msg)
+        
+        def run_chat():
+            """Run the chat in a separate thread."""
+            try:
+                # Check if this is a code analysis request
+                result_container["result"] = self.chat(
+                    message, 
+                    session_id=session_id,
+                    progress_callback=progress_callback
+                )
+            except Exception as e:
+                result_container["error"] = str(e)
         
         try:
-            # First, quickly parse intent to determine if we need streaming
-            result = self.chat(message, session_id=session_id)
+            # Step 1: Parsing intent
+            yield json.dumps({"step": "parsing", "message": "🔍 Analyzing your request..."})
+            time.sleep(0.3)
             
-            # For now, send the complete message in chunks to simulate streaming
-            # In a future enhancement, we can stream Claude's actual responses
-            if result.get("success"):
+            # Step 2: Understanding
+            yield json.dumps({"step": "understanding", "message": "🧠 Understanding intent using AI..."})
+            time.sleep(0.2)
+            
+            # Step 3: Execute in a separate thread
+            yield json.dumps({"step": "executing", "message": "⚡ Processing your request..."})
+            
+            # Start the chat in a background thread
+            chat_thread = threading.Thread(target=run_chat)
+            chat_thread.start()
+            
+            # Stream progress updates while waiting for completion
+            while chat_thread.is_alive():
+                try:
+                    # Check for progress messages with timeout
+                    msg = progress_queue.get(timeout=0.1)
+                    # Send progress as a step update
+                    yield json.dumps({"step": "progress", "message": f"📊 {msg}"})
+                except queue.Empty:
+                    pass
+            
+            # Drain any remaining messages
+            while not progress_queue.empty():
+                try:
+                    msg = progress_queue.get_nowait()
+                    yield json.dumps({"step": "progress", "message": f"📊 {msg}"})
+                except queue.Empty:
+                    break
+            
+            # Check for errors
+            if result_container["error"]:
+                yield json.dumps({"step": "error", "message": f"❌ {result_container['error']}"})
+                yield json.dumps({"success": False, "error": result_container["error"]})
+                return
+            
+            result = result_container["result"]
+            
+            # Step 4: Complete
+            if result and result.get("success"):
+                yield json.dumps({"step": "complete", "message": "✅ Action completed successfully"})
+            else:
+                yield json.dumps({"step": "error", "message": "⚠️ Encountered an issue"})
+            time.sleep(0.2)
+            
+            # Stream the response
+            if result:
                 response_text = result.get("message", "")
                 metadata = result.get("metadata")
                 
                 # Stream the response in small chunks for better UX
-                chunk_size = 20  # characters per chunk
+                chunk_size = 30  # characters per chunk
                 for i in range(0, len(response_text), chunk_size):
                     chunk = response_text[i:i+chunk_size]
                     chunk_data = {"chunk": chunk}
                     if metadata and i == 0:  # Send metadata with first chunk
                         chunk_data["metadata"] = metadata
                     yield json.dumps(chunk_data)
-                    import time
-                    time.sleep(0.02)  # Small delay for smooth streaming effect
+                    time.sleep(0.015)  # Small delay for smooth streaming effect
                 
-                # Send final complete message with metadata
-                final_data = {"message": response_text, "success": True}
+                # Send final complete message with metadata and data for download
+                final_data = {"message": response_text, "success": result.get("success", True)}
                 if metadata:
                     final_data["metadata"] = metadata
+                # Include fetched data for download functionality
+                if result.get("data"):
+                    final_data["data"] = result["data"]
+                if result.get("tracker_used"):
+                    final_data["tracker_used"] = result["tracker_used"]
                 yield json.dumps(final_data)
             else:
-                # Send error immediately
-                yield json.dumps(result)
+                yield json.dumps({"success": False, "message": "No response received"})
                 
         except Exception as e:
+            yield json.dumps({"step": "error", "message": f"❌ Error occurred: {str(e)}"})
             yield json.dumps({"success": False, "error": str(e)})
     
-    def chat(self, message: str, session_id: str = "default") -> Dict[str, Any]:
+    def chat(self, message: str, session_id: str = "default", progress_callback=None) -> Dict[str, Any]:
         """Process natural language message and route to appropriate agent.
         
         Args:
             message: Natural language message from user
             session_id: Session identifier for conversation history tracking
+            progress_callback: Optional callback for progress updates (used by chat_stream)
             
         Returns:
             Response with agent's action results
         """
+        # Store the progress callback for use in action execution
+        self._progress_callback = progress_callback
+        
         # Initialize conversation history for this session if not exists
         if session_id not in self.conversation_history:
             self.conversation_history[session_id] = []
@@ -2608,8 +2758,18 @@ You can help users with:
 **How to Respond:**
 Analyze the user's request and respond naturally. If you need to perform an action:
 
+**IMPORTANT:** For generic queries without specific counts (e.g., "pull issues from github", "show me issues", "list bugs"), ALWAYS use max_results: 10. Only use larger values when the user explicitly requests more.
+
 1. **For listing/fetching issues:** Respond ONLY with JSON (no explanation):
    {{"action": "fetch_bugs", "tracker": "jira|github|tfs", "max_results": 10, "issue_type": "Bug|Story|Task|Epic", "state": "open|closed|all"}}
+   OR for fetching all issues (not just bugs):
+   {{"action": "fetch_issues", "tracker": "github", "max_results": 10, "state": "open|closed|all"}}
+   NOTE: Use max_results: 10 for generic queries. Only use larger values (e.g., 100, 500, 2000) when user explicitly asks for more.
+   
+   **For fetching from a specific GitHub repo (when user provides a URL):**
+   {{"action": "fetch_issues", "tracker": "github", "repo_url": "https://github.com/owner/repo", "max_results": 500, "state": "all"}}
+   Extract owner and repo from URLs like: https://github.com/langchain-ai/langchain or https://github.com/langchain-ai/langchain/issues
+   Example: "pull 500 issues from https://github.com/langchain-ai/langchain" → repo_owner: "langchain-ai", repo_name: "langchain"
 
 2. **For creating issues:** Respond ONLY with JSON:
    {{"action": "create_issue", "tracker": "github", "title": "Bug title", "body": "description", "labels": ["bug", "urgent"], "assignees": ["username"]}}
@@ -2683,10 +2843,47 @@ Analyze the user's request and respond naturally. If you need to perform an acti
 16. **For extracting IDs from conversation:** Respond ONLY with JSON:
    {{"action": "list_ids", "tracker": "jira|github", "issue_type": "Bug|Story"}}
 
-17. **For conversational responses (greetings, help, clarifications):** Just respond naturally in plain text.
+17. **For historical context & embeddings (vector search):**
+    - Search Similar: {{"action": "search_similar_issues", "query": "login authentication error", "tracker": "github", "limit": 10}}
+    - Get Context: {{"action": "get_historical_context", "bug_title": "Login fails on mobile", "bug_description": "Users cannot login...", "limit": 5}}
+    - View Stats: {{"action": "get_issue_stats", "tracker": "github"}}
+
+19. **For syncing issues to OpenSearch (fetch + embed + index):**
+    - Sync Issues: {{"action": "sync_issues", "tracker": "github", "state": "closed", "max_results": 100}}
+    - Sync from specific repo: {{"action": "sync_issues", "tracker": "github", "repo_owner": "langchain-ai", "repo_name": "langchain", "max_results": 500, "state": "all"}}
+    - This fetches issues from the tracker and stores them with embeddings in OpenSearch for semantic search.
+    - Use this when user says "sync", "index", or "store issues to opensearch"
+    - Examples: "sync 100 closed issues from github", "index all jira issues", "store github issues to opensearch"
+    - When user provides a GitHub URL, extract owner and repo: https://github.com/owner/repo → repo_owner: "owner", repo_name: "repo"
+
+20. **For repo-level operations (OpenSearch):**
+    - List Indexed Repos: {{"action": "get_indexed_repos"}}
+    - Repo Stats: {{"action": "get_repo_stats", "repo_full_name": "spring-projects/spring-framework", "tracker": "github"}}
+    - Search in Repo: {{"action": "search_repo_issues", "query": "authentication", "repo_full_name": "spring-projects/spring-framework"}}
+    - Clear Repo: {{"action": "clear_repo_issues", "repo_full_name": "spring-projects/spring-framework", "tracker": "github"}}
+
+22. **For code indexing (large repository support):**
+    - Index Repo: {{"action": "index_repository", "repo_path": "./data/repos/spring-boot", "repo_full_name": "spring-projects/spring-boot"}}
+    - Index from URL: {{"action": "index_repository", "repo_url": "https://github.com/owner/repo"}}
+    - Search Code: {{"action": "search_code", "query": "authentication handler", "repo_full_name": "spring-projects/spring-boot"}}
+    - Code Stats: {{"action": "get_code_stats", "repo_full_name": "spring-projects/spring-boot"}}
+    - Clear Code Index: {{"action": "clear_code_index", "repo_full_name": "spring-projects/spring-boot"}}
+    - RAG Bug Analysis: {{"action": "analyze_bug_rag", "bug_id": "123", "repo_full_name": "spring-projects/spring-boot", "tracker": "github"}}
+    
+    **When to use code indexing:**
+    - "index spring-boot repo" → index_repository
+    - "search code for login handler" → search_code
+    - "analyze bug with rag" → analyze_bug_rag (uses semantic search for code)
+    - "show code index stats" → get_code_stats
+    
+    **RAG vs Traditional Analysis:**
+    - For small repos (<1000 files): Traditional analyze_bug works fine
+    - For large repos (millions of lines): Use index_repository first, then analyze_bug_rag
+
+21. **For conversational responses (greetings, help, clarifications):** Just respond naturally in plain text.
 
 **CRITICAL RULES:**
-- When you decide to perform an action (1-16 above), return ONLY the JSON object
+- When you decide to perform an action (1-17 above), return ONLY the JSON object
 - Do NOT include any explanatory text, greetings, or conversation before or after the JSON
 - Do NOT wrap JSON in markdown code blocks
 - The response must start with {{ and end with }}
@@ -2710,6 +2907,9 @@ Analyze the user's request and respond naturally. If you need to perform an acti
   * "create branch feature-x from develop" → create_branch
   * "list releases" → list_releases
   * "compare main and develop" → compare_branches
+  * "find similar issues to login bug" → search_similar_issues
+  * "get context for this bug" → get_historical_context
+  * "show issue stats" → get_issue_stats
 
 **JIRA-SPECIFIC ACTIONS (50 total):**
 
@@ -2824,6 +3024,9 @@ Examples of INCORRECT responses:
             # Parse Claude's response
             llm_text = response.content[0].text.strip()
             
+            # DEBUG: Print what Claude returns
+            print(f"DEBUG Claude response: {llm_text[:500]}", flush=True)
+            
             # Check if response is JSON (action) or plain text (conversational)
             try:
                 # Try to extract JSON from response
@@ -2890,8 +3093,9 @@ Examples of INCORRECT responses:
             tracker = action_data.get("tracker", self.tracker_type)
             max_results = action_data.get("max_results", 10)
             issue_type = action_data.get("issue_type")
+            state = action_data.get("state")  # Don't default to "open" - let each tracker handle it
             
-            result = self.route("fetch_bugs", max_results=max_results, tracker=tracker, issue_type=issue_type)
+            result = self.route("fetch_bugs", max_results=max_results, tracker=tracker, issue_type=issue_type, state=state)
             
             if result["success"]:
                 bugs = result["data"]
@@ -2916,9 +3120,446 @@ Examples of INCORRECT responses:
                     response_msg += f"   Status: {bug.get('status') or bug.get('state', 'Unknown')}\n\n"
                 
                 self._store_conversation(session_id, user_message, response_msg)
-                return {"success": True, "message": response_msg, "data": result["data"]}
+                return {"success": True, "message": response_msg, "data": result["data"], "tracker_used": tracker_used}
             else:
                 return {"success": False, "message": f"❌ Error: {result.get('error', 'Unknown error')}"}
+        
+        elif action == "fetch_issues":
+            # Fetch all issues (not just bugs) - supports large max_results with pagination
+            tracker = action_data.get("tracker", self.tracker_type)  # Use dynamic default tracker
+            max_results = action_data.get("max_results", 10)  # Default to 10 for generic queries
+            state = action_data.get("state", "open")
+            labels = action_data.get("labels")
+            store_embeddings = action_data.get("store_embeddings", True)  # Auto-store by default
+            
+            # Check for custom repo (from URL or explicit params)
+            custom_repo_owner = action_data.get("repo_owner")
+            custom_repo_name = action_data.get("repo_name")
+            repo_url = action_data.get("repo_url")
+            
+            # Parse repo URL if provided
+            if repo_url and not (custom_repo_owner and custom_repo_name):
+                import re
+                # Match patterns like: https://github.com/owner/repo or https://github.com/owner/repo/issues
+                match = re.search(r'github\.com/([^/]+)/([^/\s]+)', repo_url)
+                if match:
+                    custom_repo_owner = match.group(1)
+                    custom_repo_name = match.group(2).rstrip('/').replace('/issues', '').replace('/pulls', '')
+            
+            # If custom repo specified, temporarily override the GitHub agent's repo
+            original_owner = None
+            original_repo = None
+            github_agent = self.agents.get("github")
+            
+            if custom_repo_owner and custom_repo_name and tracker.lower() == "github":
+                if github_agent and github_agent.github:
+                    original_owner = github_agent.github.owner
+                    original_repo = github_agent.github.repo
+                    github_agent.github.owner = custom_repo_owner
+                    github_agent.github.repo = custom_repo_name
+                    print(f"🔀 Using custom repo: {custom_repo_owner}/{custom_repo_name}", flush=True)
+            
+            try:
+                result = self.route("fetch_issues", max_results=max_results, tracker=tracker, state=state, labels=labels)
+                
+                if result["success"]:
+                    issues = result["data"]
+                    tracker_used = result.get('tracker_used', tracker).upper()
+                    
+                    # Determine repo info for embedding storage
+                    repo_owner = custom_repo_owner or (github_agent.github.owner if github_agent and github_agent.github else None)
+                    repo_name = custom_repo_name or (github_agent.github.repo if github_agent and github_agent.github else None)
+                    
+                    # Store issues to OpenSearch with embeddings if available
+                    embedding_result = None
+                    if store_embeddings and self.issue_history and issues:
+                        try:
+                            embedding_result = self.issue_history.store_issues(
+                                issues, 
+                                tracker=tracker.lower(),
+                                repo_owner=repo_owner,
+                                repo_name=repo_name
+                            )
+                            print(f"✓ Stored {embedding_result.get('indexed', 0)} issues to OpenSearch", flush=True)
+                        except Exception as e:
+                            print(f"⚠️ Failed to store embeddings: {e}", flush=True)
+                    
+                    # Build response message
+                    repo_display = f"{repo_owner}/{repo_name}" if repo_owner and repo_name else tracker_used
+                    response_msg = f"✅ Found {result['count']} {state} issues from **{repo_display}**:\n\n"
+                    
+                    # Show first 50 issues in detail, summarize the rest
+                    display_count = min(50, len(issues))
+                    for i, issue in enumerate(issues[:display_count]):
+                        response_msg += f"📋 **{issue['id']}**: {issue['title']}\n"
+                        response_msg += f"   Status: {issue.get('status') or issue.get('state', 'Unknown')}\n\n"
+                    
+                    if len(issues) > display_count:
+                        response_msg += f"\n... and {len(issues) - display_count} more issues (showing first {display_count})\n"
+                    
+                    # Add embedding info if stored
+                    if embedding_result:
+                        response_msg += f"\n📦 **Stored to vector database:** {embedding_result.get('indexed', 0)} new, {embedding_result.get('skipped', 0)} already existed\n"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": result["data"], "tracker_used": tracker_used, "embedding_result": embedding_result}
+                else:
+                    return {"success": False, "message": f"❌ Error: {result.get('error', 'Unknown error')}"}
+            finally:
+                # Restore original repo settings
+                if original_owner and original_repo and github_agent and github_agent.github:
+                    github_agent.github.owner = original_owner
+                    github_agent.github.repo = original_repo
+        
+        elif action == "sync_issues":
+            # Sync issues from tracker to OpenSearch with embeddings
+            tracker = action_data.get("tracker", self.tracker_type)
+            max_results = action_data.get("max_results", 100)
+            state = action_data.get("state", "all")  # Default to all for sync
+            labels = action_data.get("labels")
+            
+            # Check for custom repo
+            custom_repo_owner = action_data.get("repo_owner")
+            custom_repo_name = action_data.get("repo_name")
+            repo_url = action_data.get("repo_url")
+            
+            # Parse repo URL if provided
+            if repo_url and not (custom_repo_owner and custom_repo_name):
+                import re
+                match = re.search(r'github\.com/([^/]+)/([^/\s]+)', repo_url)
+                if match:
+                    custom_repo_owner = match.group(1)
+                    custom_repo_name = match.group(2).rstrip('/').replace('/issues', '').replace('/pulls', '')
+            
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available. OpenSearch may not be running."}
+            
+            # If custom repo, temporarily override
+            original_owner = None
+            original_repo = None
+            github_agent = self.agents.get("github")
+            
+            if custom_repo_owner and custom_repo_name and tracker.lower() == "github":
+                if github_agent and github_agent.github:
+                    original_owner = github_agent.github.owner
+                    original_repo = github_agent.github.repo
+                    github_agent.github.owner = custom_repo_owner
+                    github_agent.github.repo = custom_repo_name
+                    print(f"🔀 Using custom repo: {custom_repo_owner}/{custom_repo_name}", flush=True)
+            
+            try:
+                # Fetch issues from tracker
+                result = self.route("fetch_issues", max_results=max_results, tracker=tracker, state=state, labels=labels)
+                
+                if result["success"]:
+                    issues = result["data"]
+                    tracker_used = result.get('tracker_used', tracker).upper()
+                    
+                    # Determine repo info (use custom if provided, otherwise from agent)
+                    repo_owner = custom_repo_owner
+                    repo_name = custom_repo_name
+                    project_key = None
+                    
+                    if not repo_owner and tracker.lower() == "github":
+                        if github_agent and github_agent.github:
+                            repo_owner = github_agent.github.owner
+                            repo_name = github_agent.github.repo
+                    elif tracker.lower() == "jira":
+                        jira_agent = self.agents.get("jira")
+                        if jira_agent and jira_agent.jira:
+                            project_key = jira_agent.jira.project_key
+                    
+                    # Store to OpenSearch with embeddings
+                    try:
+                        embedding_result = self.issue_history.store_issues(
+                            issues,
+                            tracker=tracker.lower(),
+                            repo_owner=repo_owner,
+                            repo_name=repo_name,
+                            project_key=project_key
+                        )
+                        
+                        repo_display = f"{repo_owner}/{repo_name}" if repo_owner and repo_name else (project_key or tracker_used)
+                        response_msg = f"✅ **Synced {len(issues)} {state} issues from {repo_display} to OpenSearch:**\n\n"
+                        response_msg += f"📦 **Indexed:** {embedding_result.get('indexed', 0)} new issues\n"
+                        response_msg += f"⏭️ **Skipped:** {embedding_result.get('skipped', 0)} (already existed)\n"
+                        response_msg += f"❌ **Errors:** {embedding_result.get('errors', 0)}\n"
+                        
+                        if repo_owner and repo_name:
+                            response_msg += f"\n🔗 **Repository:** {repo_owner}/{repo_name}\n"
+                        elif project_key:
+                            response_msg += f"\n🔗 **Project:** {project_key}\n"
+                        
+                        self._store_conversation(session_id, user_message, response_msg)
+                        return {"success": True, "message": response_msg, "embedding_result": embedding_result}
+                    except Exception as e:
+                        return {"success": False, "message": f"❌ Failed to sync issues: {str(e)}"}
+                else:
+                    return {"success": False, "message": f"❌ Error fetching issues: {result.get('error', 'Unknown error')}"}
+            finally:
+                # Restore original repo settings
+                if original_owner and original_repo and github_agent and github_agent.github:
+                    github_agent.github.owner = original_owner
+                    github_agent.github.repo = original_repo
+        
+        elif action == "get_indexed_repos":
+            # List all indexed repositories
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available."}
+            
+            try:
+                result = self.issue_history.get_indexed_repos()
+                
+                if result.get("success") and result.get("repos"):
+                    repos = result["repos"]
+                    response_msg = f"📦 **{len(repos)} Indexed Repositories:**\n\n"
+                    
+                    for repo in repos:
+                        response_msg += f"🔹 **{repo['repo_full_name']}** ({repo['tracker'].upper()})\n"
+                        response_msg += f"   Issues: {repo['issue_count']} | States: {repo.get('states', {})}\n"
+                        if repo.get('last_synced'):
+                            response_msg += f"   Last synced: {repo['last_synced']}\n"
+                        response_msg += "\n"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": repos}
+                else:
+                    return {"success": True, "message": "📦 No repositories have been indexed yet. Use 'sync issues from github' to index issues."}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error: {str(e)}"}
+        
+        elif action == "get_repo_stats":
+            # Get detailed stats for a repository
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available."}
+            
+            repo_full_name = action_data.get("repo_full_name")
+            tracker = action_data.get("tracker")
+            
+            try:
+                result = self.issue_history.get_repo_stats(repo_full_name=repo_full_name, tracker=tracker)
+                
+                if result.get("success"):
+                    response_msg = f"📊 **Repository Stats**"
+                    if repo_full_name:
+                        response_msg += f" for **{repo_full_name}**"
+                    response_msg += ":\n\n"
+                    
+                    response_msg += f"📋 **Total Issues:** {result.get('total_issues', 0)}\n\n"
+                    
+                    if result.get('by_state'):
+                        response_msg += "**By State:**\n"
+                        for state, count in result['by_state'].items():
+                            response_msg += f"  - {state}: {count}\n"
+                    
+                    if result.get('by_type'):
+                        response_msg += "\n**By Type:**\n"
+                        for type_, count in result['by_type'].items():
+                            response_msg += f"  - {type_}: {count}\n"
+                    
+                    if result.get('top_labels'):
+                        response_msg += "\n**Top Labels:**\n"
+                        for label, count in list(result['top_labels'].items())[:5]:
+                            response_msg += f"  - {label}: {count}\n"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": result}
+                else:
+                    return {"success": False, "message": f"❌ Error: {result.get('error', 'Unknown')}"}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error: {str(e)}"}
+        
+        elif action == "search_repo_issues":
+            # Search within a specific repository
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available."}
+            
+            query = action_data.get("query", "")
+            repo_full_name = action_data.get("repo_full_name")
+            tracker = action_data.get("tracker")
+            use_semantic = action_data.get("use_semantic", True)
+            limit = action_data.get("limit", 20)
+            
+            if not query:
+                return {"success": False, "message": "❌ Please provide a search query."}
+            
+            try:
+                result = self.issue_history.search_repo_issues(
+                    query=query,
+                    repo_full_name=repo_full_name,
+                    tracker=tracker,
+                    use_semantic=use_semantic,
+                    limit=limit
+                )
+                
+                if result.get("success") and result.get("results"):
+                    issues = result["results"]
+                    search_type = "semantic" if use_semantic else "text"
+                    response_msg = f"🔍 **Found {len(issues)} issues** ({search_type} search)"
+                    if repo_full_name:
+                        response_msg += f" in **{repo_full_name}**"
+                    response_msg += ":\n\n"
+                    
+                    for issue in issues[:20]:
+                        response_msg += f"📋 **{issue['issue_id']}**: {issue['title']}\n"
+                        response_msg += f"   Score: {issue.get('search_score', 0):.2f} | State: {issue.get('state', 'unknown')}\n\n"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": issues}
+                else:
+                    return {"success": True, "message": f"🔍 No issues found matching '{query}'"}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error: {str(e)}"}
+        
+        elif action == "clear_repo_issues":
+            # Clear issues for a repository
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available."}
+            
+            repo_full_name = action_data.get("repo_full_name")
+            tracker = action_data.get("tracker")
+            
+            if not repo_full_name and not tracker:
+                return {"success": False, "message": "❌ Please specify repo_full_name or tracker to clear."}
+            
+            try:
+                result = self.issue_history.clear_repo_issues(
+                    repo_full_name=repo_full_name,
+                    tracker=tracker
+                )
+                
+                if result.get("success"):
+                    response_msg = f"🗑️ **Cleared {result.get('deleted', 0)} issues**"
+                    if repo_full_name:
+                        response_msg += f" from **{repo_full_name}**"
+                    if tracker:
+                        response_msg += f" ({tracker})"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg}
+                else:
+                    return {"success": False, "message": f"❌ Error: {result.get('error', 'Unknown')}"}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error: {str(e)}"}
+        
+        elif action == "search_similar_issues":
+            # Search for semantically similar issues using embeddings
+            query = action_data.get("query", "")
+            tracker = action_data.get("tracker")
+            state = action_data.get("state")
+            limit = action_data.get("limit", 10)
+            
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available. OpenSearch may not be running."}
+            
+            if not query:
+                return {"success": False, "message": "❌ Please provide a search query."}
+            
+            try:
+                similar_issues = self.issue_history.search_similar_issues(
+                    query=query,
+                    tracker=tracker,
+                    state=state,
+                    limit=limit
+                )
+                
+                if similar_issues:
+                    response_msg = f"🔍 **Found {len(similar_issues)} similar issues:**\n\n"
+                    for issue in similar_issues:
+                        score = issue.get('similarity_score', 0)
+                        response_msg += f"📋 **{issue['issue_id']}**: {issue['title']}\n"
+                        response_msg += f"   Similarity: {score:.2f} | State: {issue.get('state', 'unknown')} | Tracker: {issue.get('tracker', 'unknown').upper()}\n"
+                        if issue.get('labels'):
+                            response_msg += f"   Labels: {', '.join(issue['labels'][:5])}\n"
+                        response_msg += "\n"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": similar_issues}
+                else:
+                    return {"success": True, "message": "No similar issues found in the vector database. Try fetching more issues first."}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error searching: {str(e)}"}
+        
+        elif action == "get_historical_context":
+            # Get historical context for a bug (for code analysis)
+            bug_title = action_data.get("bug_title", "")
+            bug_description = action_data.get("bug_description", "")
+            tracker = action_data.get("tracker")
+            limit = action_data.get("limit", 5)
+            
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available."}
+            
+            if not bug_title:
+                return {"success": False, "message": "❌ Please provide a bug title."}
+            
+            try:
+                context = self.issue_history.get_historical_context(
+                    bug_title=bug_title,
+                    bug_description=bug_description,
+                    tracker=tracker,
+                    limit=limit
+                )
+                
+                if context.get("has_context"):
+                    response_msg = f"📚 **Historical Context Found:**\n\n"
+                    response_msg += f"Found **{context['similar_issues_count']}** similar historical issues.\n\n"
+                    
+                    # Show patterns
+                    patterns = context.get('patterns', {})
+                    if patterns.get('common_labels'):
+                        response_msg += f"**Common Labels:** {', '.join(patterns['common_labels'].keys())}\n"
+                    if patterns.get('resolution_states'):
+                        response_msg += f"**Resolution States:** {', '.join(f'{k}({v})' for k,v in patterns['resolution_states'].items())}\n"
+                    if patterns.get('common_assignees'):
+                        response_msg += f"**Common Assignees:** {', '.join(patterns['common_assignees'].keys())}\n"
+                    
+                    response_msg += "\n**Similar Issues:**\n"
+                    for issue in context['similar_issues'][:5]:
+                        response_msg += f"- **{issue['issue_id']}**: {issue['title']}\n"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": context}
+                else:
+                    return {"success": True, "message": context.get("message", "No historical context found."), "data": context}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error getting context: {str(e)}"}
+        
+        elif action == "get_issue_stats":
+            # Get statistics about stored issues
+            tracker = action_data.get("tracker")
+            
+            if not self.issue_history:
+                return {"success": False, "message": "❌ Issue history service not available."}
+            
+            try:
+                stats = self.issue_history.get_issue_stats(tracker=tracker)
+                
+                if "error" not in stats:
+                    response_msg = f"📊 **Issue History Statistics:**\n\n"
+                    response_msg += f"**Total Issues Stored:** {stats.get('total_issues', 0)}\n\n"
+                    
+                    if stats.get('by_tracker'):
+                        response_msg += "**By Tracker:**\n"
+                        for t, count in stats['by_tracker'].items():
+                            response_msg += f"  - {t.upper()}: {count}\n"
+                    
+                    if stats.get('by_state'):
+                        response_msg += "\n**By State:**\n"
+                        for s, count in stats['by_state'].items():
+                            response_msg += f"  - {s}: {count}\n"
+                    
+                    if stats.get('by_repo'):
+                        response_msg += "\n**By Repository:**\n"
+                        for r, count in list(stats['by_repo'].items())[:10]:
+                            response_msg += f"  - {r}: {count}\n"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": stats}
+                else:
+                    return {"success": False, "message": f"❌ Error: {stats['error']}"}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error getting stats: {str(e)}"}
         
         elif action == "list_ids":
             tracker = action_data.get("tracker")
@@ -3020,6 +3661,7 @@ Examples of INCORRECT responses:
         elif action == "analyze_bug":
             bug_id = action_data.get("bug_id")
             tracker = action_data.get("tracker", self.tracker_type)
+            use_historical_context = action_data.get("use_context", True)  # Default: use context
             
             if not bug_id:
                 return {"success": False, "message": "❌ Please specify a bug ID to analyze"}
@@ -3030,20 +3672,52 @@ Examples of INCORRECT responses:
                 return {"success": False, "message": f"❌ Error: Could not fetch bug {bug_id}"}
             
             bug = bug_result["data"]
-            bug_description = f"Title: {bug['title']}\n\nDescription: {bug.get('description', 'No description')}"
+            bug_title = bug.get('title', '')
+            bug_desc = bug.get('description', 'No description')
+            bug_description = f"Title: {bug_title}\n\nDescription: {bug_desc}"
+            
+            # Get historical context if available
+            historical_context = None
+            context_msg = ""
+            if use_historical_context and self.issue_history:
+                try:
+                    context = self.issue_history.get_historical_context(
+                        bug_title=bug_title,
+                        bug_description=bug_desc,
+                        tracker=tracker,
+                        limit=5
+                    )
+                    if context.get("has_context"):
+                        historical_context = context
+                        context_msg = f"\n📚 **Historical Context:** Found {context['similar_issues_count']} similar past issues\n"
+                except Exception as e:
+                    print(f"⚠️ Failed to get historical context: {e}", flush=True)
             
             # Analyze code
             analysis_agent = self.agents.get("code_analysis")
             if not analysis_agent:
                 return {"success": False, "message": "❌ Code analysis agent not available"}
             
-            response_msg = f"🔍 **Analyzing bug {bug_id}...**\n\nThis may take a moment while I scan the codebase.\n\n"
+            # Set progress callback if available
+            if hasattr(self, '_progress_callback') and self._progress_callback:
+                analysis_agent.set_progress_callback(self._progress_callback)
             
+            response_msg = f"🔍 **Analyzing bug {bug_id}...**\n\n"
+            response_msg += context_msg
+            response_msg += "This may take a moment while I scan the codebase.\n\n"
+            
+            # Use analyze_with_context if we have historical context
+            action_name = "analyze_with_context" if historical_context else "analyze_bug"
             analysis_result = analysis_agent.execute(
-                "analyze_bug",
+                action_name,
                 bug_id=str(bug_id),
-                bug_description=bug_description
+                bug_description=bug_description,
+                historical_context=historical_context
             )
+            
+            # Clear the progress callback
+            if hasattr(self, '_progress_callback'):
+                analysis_agent.set_progress_callback(None)
             
             if analysis_result["success"]:
                 data = analysis_result["data"]
@@ -3053,14 +3727,15 @@ Examples of INCORRECT responses:
                 findings = data.get('findings', [])
                 if findings:
                     response_msg += f"**Findings ({len(findings)}):**\n\n"
-                    for idx, finding in enumerate(findings[:3], 1):
-                        response_msg += f"{idx}. **{finding.get('file', 'Unknown')}**\n"
-                        response_msg += f"   Lines: {finding.get('lines', 'N/A')}\n"
-                        response_msg += f"   Severity: {finding.get('severity', 'Unknown')}\n"
-                        response_msg += f"   Issue: {finding.get('issue', 'N/A')}\n"
-                        response_msg += f"   Resolution: {finding.get('resolution', 'N/A')[:150]}...\n\n"
-                    if len(findings) > 3:
-                        response_msg += f"... and {len(findings) - 3} more findings"
+                    for idx, finding in enumerate(findings, 1):
+                        response_msg += f"---\n\n"
+                        response_msg += f"### Finding {idx}: {finding.get('file', 'Unknown')}\n\n"
+                        response_msg += f"**Lines:** {finding.get('lines', 'N/A')}\n\n"
+                        response_msg += f"**Severity:** {finding.get('severity', 'Unknown')}\n\n"
+                        response_msg += f"**Issue:** {finding.get('issue', 'N/A')}\n\n"
+                        response_msg += f"**Resolution:**\n{finding.get('resolution', 'N/A')}\n\n"
+                        if finding.get('code_fix'):
+                            response_msg += f"**Code Fix:**\n```\n{finding.get('code_fix')}\n```\n\n"
                 else:
                     response_msg += "No specific issues found in analyzed files."
                 
@@ -3068,6 +3743,281 @@ Examples of INCORRECT responses:
                 return {"success": True, "message": response_msg, "data": data}
             else:
                 return {"success": False, "message": f"❌ Error: {analysis_result.get('error', 'Analysis failed')}"}
+        
+        # =====================================================================
+        # CODE INDEXING ACTIONS (For Large Repository Support)
+        # =====================================================================
+        
+        elif action == "index_repository":
+            # Index a repository's code for RAG-based analysis
+            repo_path = action_data.get("repo_path")
+            repo_full_name = action_data.get("repo_full_name")
+            repo_url = action_data.get("repo_url")
+            extensions = action_data.get("extensions")
+            
+            # Parse repo URL if provided
+            if repo_url and not repo_full_name:
+                import re
+                match = re.search(r'github\.com/([^/]+)/([^/\s]+)', repo_url)
+                if match:
+                    repo_full_name = f"{match.group(1)}/{match.group(2).rstrip('/').replace('/issues', '').replace('/pulls', '')}"
+            
+            # Default repo path if not provided
+            if not repo_path and repo_full_name:
+                repo_name = repo_full_name.split('/')[-1]
+                repo_path = str(Config.REPO_PATH) if repo_name == Config.REPO_PATH.name else f"./data/repos/{repo_name}"
+            
+            if not repo_path or not repo_full_name:
+                return {"success": False, "message": "❌ Please provide repo_path and repo_full_name (or repo_url)"}
+            
+            response_msg = f"📁 **Indexing repository: {repo_full_name}**\n\n"
+            response_msg += f"Path: {repo_path}\n"
+            if extensions:
+                response_msg += f"Extensions: {', '.join(extensions)}\n"
+            response_msg += "\nThis may take a while for large repositories...\n\n"
+            
+            # Use code analysis agent to index
+            code_agent = self.agents.get("code_analysis")
+            if not code_agent or not code_agent.code_analyzer:
+                return {"success": False, "message": "❌ Code analysis agent not available"}
+            
+            try:
+                result = code_agent.code_analyzer.index_repository(
+                    repo_path=repo_path,
+                    repo_full_name=repo_full_name,
+                    extensions=extensions
+                )
+                
+                if result.get("status") == "success":
+                    response_msg += f"✅ **Indexing Complete!**\n\n"
+                    response_msg += f"📊 **Statistics:**\n"
+                    response_msg += f"  - Files indexed: {result.get('files_indexed', 0)}\n"
+                    response_msg += f"  - Code chunks: {result.get('chunks_indexed', 0)}\n"
+                    response_msg += f"  - Skipped (unchanged): {result.get('files_skipped', 0)}\n"
+                    response_msg += f"  - Errors: {result.get('errors', 0)}\n\n"
+                    response_msg += f"🔗 Repository: **{repo_full_name}**\n"
+                    response_msg += "\nYou can now use RAG-based analysis for this repository!"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": result}
+                else:
+                    return {"success": False, "message": f"❌ Error: {result.get('message', 'Indexing failed')}"}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error indexing repository: {str(e)}"}
+        
+        elif action == "search_code":
+            # Search indexed code using RAG
+            query = action_data.get("query", "")
+            repo_full_name = action_data.get("repo_full_name")
+            language = action_data.get("language")
+            chunk_type = action_data.get("chunk_type")  # function, class, etc.
+            limit = action_data.get("limit", 10)
+            
+            if not query:
+                return {"success": False, "message": "❌ Please provide a search query"}
+            
+            code_agent = self.agents.get("code_analysis")
+            if not code_agent or not code_agent.code_analyzer:
+                return {"success": False, "message": "❌ Code analysis agent not available"}
+            
+            try:
+                code_index = code_agent.code_analyzer.code_index_service
+                if not code_index:
+                    return {"success": False, "message": "❌ Code index service not available. Please index a repository first."}
+                
+                results = code_index.search_code(
+                    query=query,
+                    repo_full_name=repo_full_name,
+                    language=language,
+                    chunk_type=chunk_type,
+                    limit=limit
+                )
+                
+                if results:
+                    response_msg = f"🔍 **Found {len(results)} code matches for '{query}':**\n\n"
+                    
+                    for i, result in enumerate(results[:10], 1):
+                        response_msg += f"**{i}. {result.get('file_path', 'Unknown')}**\n"
+                        response_msg += f"   Type: {result.get('chunk_type', 'code')} | Lines: {result.get('start_line', '?')}-{result.get('end_line', '?')}\n"
+                        response_msg += f"   Score: {result.get('score', 0):.3f}\n"
+                        if result.get('name'):
+                            response_msg += f"   Name: `{result['name']}`\n"
+                        if result.get('signature'):
+                            response_msg += f"   Signature: `{result['signature'][:80]}...`\n"
+                        response_msg += "\n"
+                    
+                    if len(results) > 10:
+                        response_msg += f"\n... and {len(results) - 10} more matches"
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": results}
+                else:
+                    return {"success": True, "message": f"🔍 No code matches found for '{query}'. Try a different query or index more repositories."}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error searching code: {str(e)}"}
+        
+        elif action == "get_code_stats":
+            # Get statistics about indexed code
+            repo_full_name = action_data.get("repo_full_name")
+            
+            code_agent = self.agents.get("code_analysis")
+            if not code_agent or not code_agent.code_analyzer:
+                return {"success": False, "message": "❌ Code analysis agent not available"}
+            
+            try:
+                stats = code_agent.code_analyzer.get_index_stats(repo_full_name)
+                
+                response_msg = f"📊 **Code Index Statistics**"
+                if repo_full_name:
+                    response_msg += f" for **{repo_full_name}**"
+                response_msg += ":\n\n"
+                
+                response_msg += f"📦 **Total Chunks:** {stats.get('total_chunks', 0)}\n"
+                response_msg += f"📄 **Unique Files:** {stats.get('unique_files', 0)}\n\n"
+                
+                if stats.get('by_language'):
+                    response_msg += "**By Language:**\n"
+                    for lang, count in stats['by_language'].items():
+                        response_msg += f"  - {lang}: {count}\n"
+                
+                if stats.get('by_type'):
+                    response_msg += "\n**By Type:**\n"
+                    for type_, count in stats['by_type'].items():
+                        response_msg += f"  - {type_}: {count}\n"
+                
+                if stats.get('repos'):
+                    response_msg += "\n**Indexed Repositories:**\n"
+                    for repo in stats['repos'][:10]:
+                        response_msg += f"  - {repo}\n"
+                
+                self._store_conversation(session_id, user_message, response_msg)
+                return {"success": True, "message": response_msg, "data": stats}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error: {str(e)}"}
+        
+        elif action == "clear_code_index":
+            # Clear indexed code for a repository
+            repo_full_name = action_data.get("repo_full_name")
+            
+            if not repo_full_name:
+                return {"success": False, "message": "❌ Please specify repo_full_name to clear"}
+            
+            code_agent = self.agents.get("code_analysis")
+            if not code_agent or not code_agent.code_analyzer:
+                return {"success": False, "message": "❌ Code analysis agent not available"}
+            
+            try:
+                code_index = code_agent.code_analyzer.code_index_service
+                if not code_index:
+                    return {"success": False, "message": "❌ Code index service not available"}
+                
+                result = code_index.clear_repository(repo_full_name)
+                
+                response_msg = f"🗑️ **Cleared code index for {repo_full_name}**\n\n"
+                response_msg += f"Deleted {result.get('deleted', 0)} chunks"
+                
+                self._store_conversation(session_id, user_message, response_msg)
+                return {"success": True, "message": response_msg, "data": result}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error: {str(e)}"}
+        
+        elif action == "analyze_bug_rag":
+            # Analyze bug using RAG-based code retrieval (for large repos)
+            bug_id = action_data.get("bug_id")
+            tracker = action_data.get("tracker", self.tracker_type)
+            repo_full_name = action_data.get("repo_full_name")
+            use_historical_context = action_data.get("use_context", True)
+            
+            if not bug_id:
+                return {"success": False, "message": "❌ Please specify a bug ID to analyze"}
+            
+            # First get bug details
+            bug_result = self.route("get_bug_details", bug_id=str(bug_id), tracker=tracker)
+            if not bug_result["success"]:
+                return {"success": False, "message": f"❌ Error: Could not fetch bug {bug_id}"}
+            
+            bug = bug_result["data"]
+            bug_title = bug.get('title', '')
+            bug_desc = bug.get('description', 'No description')
+            bug_description = f"Title: {bug_title}\n\nDescription: {bug_desc}"
+            
+            # Determine repo_full_name if not provided
+            if not repo_full_name:
+                github_agent = self.agents.get("github")
+                if github_agent and github_agent.github:
+                    repo_full_name = f"{github_agent.github.owner}/{github_agent.github.repo}"
+            
+            if not repo_full_name:
+                return {"success": False, "message": "❌ Please specify repo_full_name for RAG analysis"}
+            
+            # Get historical context
+            historical_context = None
+            context_msg = ""
+            if use_historical_context and self.issue_history:
+                try:
+                    context = self.issue_history.get_historical_context(
+                        bug_title=bug_title,
+                        bug_description=bug_desc,
+                        tracker=tracker,
+                        limit=5
+                    )
+                    if context.get("has_context"):
+                        historical_context = context
+                        context_msg = f"\n📚 **Historical Context:** Found {context['similar_issues_count']} similar past issues\n"
+                except Exception as e:
+                    print(f"⚠️ Failed to get historical context: {e}", flush=True)
+            
+            # Use RAG-based analysis
+            code_agent = self.agents.get("code_analysis")
+            if not code_agent or not code_agent.code_analyzer:
+                return {"success": False, "message": "❌ Code analysis agent not available"}
+            
+            response_msg = f"🔍 **Analyzing bug {bug_id} with RAG...**\n\n"
+            response_msg += f"Repository: {repo_full_name}\n"
+            response_msg += context_msg
+            response_msg += "\nUsing semantic search to find relevant code...\n\n"
+            
+            try:
+                analysis_result = code_agent.code_analyzer.analyze_bug_with_rag(
+                    bug_description=bug_description,
+                    bug_key=str(bug_id),
+                    repo_full_name=repo_full_name,
+                    historical_context=historical_context
+                )
+                
+                if analysis_result.get("status") == "analyzed":
+                    response_msg += f"✅ **Analysis Complete**\n\n"
+                    response_msg += f"Mode: {analysis_result.get('mode', 'rag').upper()}\n"
+                    response_msg += f"Code chunks analyzed: {analysis_result.get('code_chunks_analyzed', 0)}\n"
+                    
+                    if analysis_result.get('files_referenced'):
+                        response_msg += f"Files referenced: {len(analysis_result['files_referenced'])}\n"
+                    
+                    response_msg += "\n"
+                    
+                    findings = analysis_result.get('findings', [])
+                    if findings:
+                        response_msg += f"**Findings ({len(findings)}):**\n\n"
+                        for idx, finding in enumerate(findings, 1):
+                            response_msg += f"---\n\n"
+                            response_msg += f"### Finding {idx}: {finding.get('file', 'Unknown')}\n\n"
+                            response_msg += f"**Lines:** {finding.get('lines', 'N/A')}\n\n"
+                            response_msg += f"**Severity:** {finding.get('severity', 'Unknown')}\n\n"
+                            response_msg += f"**Issue:** {finding.get('issue', 'N/A')}\n\n"
+                            if finding.get('root_cause'):
+                                response_msg += f"**Root Cause:**\n{finding['root_cause']}\n\n"
+                            response_msg += f"**Resolution:**\n{finding.get('resolution', 'N/A')}\n\n"
+                            if finding.get('code_fix'):
+                                response_msg += f"**Code Fix:**\n```\n{finding.get('code_fix')}\n```\n\n"
+                    else:
+                        response_msg += "No specific issues found in the relevant code."
+                    
+                    self._store_conversation(session_id, user_message, response_msg)
+                    return {"success": True, "message": response_msg, "data": analysis_result}
+                else:
+                    return {"success": False, "message": f"❌ Error: {analysis_result.get('message', 'Analysis failed')}"}
+            except Exception as e:
+                return {"success": False, "message": f"❌ Error during RAG analysis: {str(e)}"}
         
         elif action == "list_branches":
             repo_url = action_data.get("repo_url")
@@ -4572,8 +5522,17 @@ Examples of INCORRECT responses:
                 "supported_actions": agent.get_capabilities()
             }
         
+        # Set progress callback on agent if available (for progress tracking in UI)
+        if hasattr(self, '_progress_callback') and self._progress_callback:
+            if hasattr(agent, 'set_progress_callback'):
+                agent.set_progress_callback(self._progress_callback)
+        
         # Execute the action
-        return agent.execute(action, **kwargs)
+        result = agent.execute(action, **kwargs)
+        # Add tracker_used to response so caller knows which tracker was used
+        if isinstance(result, dict):
+            result['tracker_used'] = tracker
+        return result
     
     def _route_to_best_tracker(self, action: str, params: Dict[str, Any]) -> str:
         """Use Claude LLM to intelligently route to the best tracker."""

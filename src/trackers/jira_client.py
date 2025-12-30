@@ -1,5 +1,5 @@
 """Jira MCP Server - Model Context Protocol server for Jira integration."""
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, Callable
 from jira import JIRA
 from pydantic import BaseModel, Field
 from src.config import Config
@@ -7,6 +7,9 @@ import urllib3
 
 # Disable SSL warnings for Jira connection
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Type alias for progress callback
+ProgressCallback = Callable[[str], None]
 
 
 class JiraIssue(BaseModel):
@@ -34,7 +37,18 @@ class JiraMCPServer:
     def __init__(self):
         """Initialize the Jira MCP server."""
         self.jira_client: Optional[JIRA] = None
+        self.progress_callback: Optional[ProgressCallback] = None
         self._connect()
+    
+    def set_progress_callback(self, callback: Optional[ProgressCallback]):
+        """Set a callback function for progress updates."""
+        self.progress_callback = callback
+    
+    def _report_progress(self, message: str):
+        """Report progress via callback if set, otherwise print."""
+        if self.progress_callback:
+            self.progress_callback(message)
+        print(message)
     
     def _connect(self):
         """Establish connection to Jira."""
@@ -109,7 +123,7 @@ class JiraMCPServer:
         jql_query = ' AND '.join(jql_parts)
         jql_query += ' ORDER BY created DESC'
         
-        print(f"Executing JQL: {jql_query}")
+        self._report_progress(f"📥 Executing JQL: {jql_query}")
         
         # Fetch issues
         issues = self.jira_client.search_issues(
@@ -138,7 +152,7 @@ class JiraMCPServer:
             jira_issues.append(jira_issue)
         
         issue_label = issue_type if issue_type else "issues"
-        print(f"✓ Retrieved {len(jira_issues)} {issue_label} from Jira")
+        self._report_progress(f"✅ Retrieved {len(jira_issues)} {issue_label} from Jira (100%)")
         return jira_issues
     
     def get_issue(self, issue_key: str) -> JiraIssue:

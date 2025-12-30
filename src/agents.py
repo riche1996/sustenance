@@ -2581,14 +2581,15 @@ Examples of INCORRECT responses:
                 findings = data.get('findings', [])
                 if findings:
                     response_msg += f"**Findings ({len(findings)}):**\n\n"
-                    for idx, finding in enumerate(findings[:3], 1):
-                        response_msg += f"{idx}. **{finding.get('file', 'Unknown')}**\n"
-                        response_msg += f"   Lines: {finding.get('lines', 'N/A')}\n"
-                        response_msg += f"   Severity: {finding.get('severity', 'Unknown')}\n"
-                        response_msg += f"   Issue: {finding.get('issue', 'N/A')}\n"
-                        response_msg += f"   Resolution: {finding.get('resolution', 'N/A')[:150]}...\n\n"
-                    if len(findings) > 3:
-                        response_msg += f"... and {len(findings) - 3} more findings"
+                    for idx, finding in enumerate(findings, 1):
+                        response_msg += f"---\n\n"
+                        response_msg += f"### Finding {idx}: {finding.get('file', 'Unknown')}\n\n"
+                        response_msg += f"**Lines:** {finding.get('lines', 'N/A')}\n\n"
+                        response_msg += f"**Severity:** {finding.get('severity', 'Unknown')}\n\n"
+                        response_msg += f"**Issue:** {finding.get('issue', 'N/A')}\n\n"
+                        response_msg += f"**Resolution:**\n{finding.get('resolution', 'N/A')}\n\n"
+                        if finding.get('code_fix'):
+                            response_msg += f"**Code Fix:**\n```\n{finding.get('code_fix')}\n```\n\n"
                 else:
                     response_msg += "No specific issues found in analyzed files."
                 

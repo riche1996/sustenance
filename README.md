@@ -24,6 +24,11 @@ We've expanded GitHub capabilities from 10 to **47 total actions**, adding:
   - Issues, Pull Requests, Labels, Milestones
   - Branches, Commits, Files, Code Search
   - Collaborators, Releases, Tags
+- **Large Repository Support**: RAG-based code indexing for million-line codebases
+  - AST-based code chunking (Python, Java, JS/TS, C/C++)
+  - Semantic code search via vector embeddings
+  - Incremental indexing (only changed files)
+  - See `docs/capabilities/CODE_INDEXING.md` for details
 - **Natural Language Interface**: Chat-based interaction powered by Claude AI
 - **Session Management**: Persistent chat sessions with dynamic titles
 - **AI-Powered Analysis**: Leverage Claude SDK to analyze repository code

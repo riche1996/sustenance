@@ -422,6 +422,113 @@
             }
         }
         
+        /* Intermediate Steps Styles */
+        .intermediate-steps {
+            margin-bottom: 12px;
+            padding: 12px 16px;
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 12px;
+            font-size: 13px;
+        }
+        
+        .step-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 0;
+            color: #a0a0b0;
+            transition: all 0.3s ease;
+        }
+        
+        .step-item.active {
+            color: #00d9ff;
+        }
+        
+        .step-item.completed {
+            color: #00ff88;
+        }
+        
+        .step-icon {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+        
+        .step-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(0, 217, 255, 0.3);
+            border-top-color: #00d9ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .step-message {
+            flex: 1;
+        }
+        
+        /* Download Button Styles */
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            margin-top: 12px;
+            background: linear-gradient(135deg, rgba(0, 217, 255, 0.15) 0%, rgba(102, 126, 234, 0.15) 100%);
+            border: 1px solid rgba(0, 217, 255, 0.4);
+            border-radius: 8px;
+            color: #00d9ff;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .download-btn:hover {
+            background: linear-gradient(135deg, rgba(0, 217, 255, 0.25) 0%, rgba(102, 126, 234, 0.25) 100%);
+            box-shadow: 0 4px 12px rgba(0, 217, 255, 0.3);
+            transform: translateY(-1px);
+        }
+        
+        .download-btn:active {
+            transform: translateY(0);
+        }
+        
+        .download-btn .icon {
+            font-size: 14px;
+        }
+        
+        .download-options {
+            display: inline-flex;
+            gap: 8px;
+            margin-left: 8px;
+        }
+        
+        .download-option {
+            padding: 6px 12px;
+            background: rgba(58, 58, 78, 0.5);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 6px;
+            color: #a0a0b0;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .download-option:hover {
+            background: rgba(102, 126, 234, 0.2);
+            color: #00d9ff;
+            border-color: rgba(0, 217, 255, 0.4);
+        }
+        
         .typing-indicator {
             display: flex;
             gap: 6px;
@@ -909,7 +1016,18 @@
                                         updateStreamingMessage(streamingBubble, '❌ Error: ' + parsed.error);
                                         break;
                                     }
-                                    if (parsed.chunk) {
+                                    
+                                    // Store fetched issues data for download BEFORE formatting message
+                                    if (parsed.data && Array.isArray(parsed.data) && parsed.data.length > 0) {
+                                        lastFetchedIssues = parsed.data;
+                                        lastFetchedTracker = parsed.tracker_used || 'export';
+                                        console.log('Stored issues for download:', lastFetchedIssues.length, 'from', lastFetchedTracker);
+                                    }
+                                    
+                                    // Handle intermediate steps
+                                    if (parsed.step) {
+                                        updateIntermediateSteps(streamingBubble, parsed.step, parsed.message);
+                                    } else if (parsed.chunk) {
                                         fullMessage += parsed.chunk;
                                         updateStreamingMessage(streamingBubble, fullMessage, parsed.metadata);
                                     } else if (parsed.message) {
@@ -940,6 +1058,59 @@
             isProcessing = false;
             sendButton.disabled = false;
             messageInput.focus();
+        }
+        
+        // Track intermediate steps
+        let currentSteps = [];
+        
+        // Update intermediate steps display
+        function updateIntermediateSteps(bubble, step, message) {
+            // Get or create steps container
+            let stepsContainer = bubble.querySelector('.intermediate-steps');
+            if (!stepsContainer) {
+                stepsContainer = document.createElement('div');
+                stepsContainer.className = 'intermediate-steps';
+                bubble.insertBefore(stepsContainer, bubble.firstChild);
+                currentSteps = [];
+            }
+            
+            // Mark previous steps as completed
+            const existingSteps = stepsContainer.querySelectorAll('.step-item');
+            existingSteps.forEach(el => {
+                el.classList.remove('active');
+                el.classList.add('completed');
+                const icon = el.querySelector('.step-icon');
+                if (icon && icon.innerHTML.includes('step-spinner')) {
+                    icon.innerHTML = '✓';
+                }
+            });
+            
+            // Add new step
+            const stepItem = document.createElement('div');
+            stepItem.className = 'step-item active';
+            stepItem.innerHTML = `
+                <span class="step-icon"><div class="step-spinner"></div></span>
+                <span class="step-message">${formatStepMessage(message)}</span>
+            `;
+            stepsContainer.appendChild(stepItem);
+            
+            // Mark as completed if it's the final step
+            if (step === 'complete' || step === 'error') {
+                stepItem.classList.remove('active');
+                stepItem.classList.add('completed');
+                const icon = stepItem.querySelector('.step-icon');
+                if (icon) {
+                    icon.innerHTML = step === 'complete' ? '✓' : '✗';
+                }
+            }
+            
+            // Scroll to bottom
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        // Format step message (handle markdown-style bold)
+        function formatStepMessage(message) {
+            return message.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #00d9ff;">$1</strong>');
         }
         
         // Add message to chat
@@ -1037,6 +1208,10 @@
         let bugDataCache = {};
         let messageIdCounter = 0;
         
+        // Store last fetched issues for download
+        let lastFetchedIssues = null;
+        let lastFetchedTracker = null;
+        
         // Format message with markdown
         function formatMessage(text, messageId = null) {
             let formatted = text
@@ -1049,7 +1224,67 @@
                 return `<div class="expand-bugs-btn" onclick="expandBugs('${messageId}')"><span class="icon">👇</span> Show ${count} more...</div><div id="hidden-bugs-${messageId}" class="hidden-bugs" style="display: none;"></div>`;
             });
             
+            // Add download button if issues were fetched (check for "Found X issues" or "Found X bugs" pattern)
+            if (lastFetchedIssues && lastFetchedIssues.length > 0 && 
+                (text.includes('Found') && (text.includes('issues') || text.includes('bugs') || text.includes('stories') || text.includes('tasks')))) {
+                formatted += `
+                    <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(58, 58, 78, 0.5);">
+                        <span style="color: #a0a0b0; font-size: 13px;">📥 Download ${lastFetchedIssues.length} issues:</span>
+                        <div class="download-options">
+                            <button class="download-option" onclick="downloadIssues('json')">JSON</button>
+                            <button class="download-option" onclick="downloadIssues('csv')">CSV</button>
+                        </div>
+                    </div>
+                `;
+            }
+            
             return formatted;
+        }
+        
+        // Download issues in specified format
+        function downloadIssues(format) {
+            if (!lastFetchedIssues || lastFetchedIssues.length === 0) {
+                alert('No issues available to download');
+                return;
+            }
+            
+            let content, filename, mimeType;
+            const timestamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '');
+            
+            if (format === 'json') {
+                content = JSON.stringify(lastFetchedIssues, null, 2);
+                filename = `issues_${lastFetchedTracker || 'export'}_${timestamp}.json`;
+                mimeType = 'application/json';
+            } else if (format === 'csv') {
+                // Build CSV content
+                const headers = ['ID', 'Title', 'Status', 'Priority', 'Assignee', 'Created', 'Updated', 'Labels'];
+                const rows = lastFetchedIssues.map(issue => [
+                    issue.id || issue.key || issue.number || '',
+                    `"${(issue.title || issue.summary || '').replace(/"/g, '""')}"`,
+                    issue.status || issue.state || '',
+                    issue.priority || '',
+                    issue.assignee || '',
+                    issue.created_at || issue.created || '',
+                    issue.updated_at || issue.updated || '',
+                    `"${(issue.labels || []).join(', ')}"`
+                ]);
+                content = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+                filename = `issues_${lastFetchedTracker || 'export'}_${timestamp}.csv`;
+                mimeType = 'text/csv';
+            } else {
+                return;
+            }
+            
+            // Create download link
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
         
         // Expand hidden bugs

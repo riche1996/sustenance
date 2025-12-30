@@ -2,7 +2,28 @@
 from typing import List, Union
 import logging
 import os
+import ssl
 from pathlib import Path
+
+# Disable SSL verification for HuggingFace downloads (corporate proxy/firewall issues)
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['HF_HUB_DISABLE_SSL_VERIFICATION'] = '1'
+os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+os.environ['TRANSFORMERS_OFFLINE'] = '0'
+
+# Disable SSL verification globally
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Monkey-patch requests to disable SSL verification
+import requests
+old_request = requests.Session.request
+def new_request(self, *args, **kwargs):
+    kwargs['verify'] = False
+    return old_request(self, *args, **kwargs)
+requests.Session.request = new_request
+
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)

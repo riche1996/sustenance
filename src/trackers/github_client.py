@@ -1,9 +1,12 @@
 """GitHub MCP Server - Model Context Protocol server for GitHub integration."""
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, Callable
 from pydantic import BaseModel, Field
 from src.config import Config
 import requests
 from requests.auth import HTTPBasicAuth
+
+# Type alias for progress callback
+ProgressCallback = Callable[[str], None]
 
 
 class GitHubIssue(BaseModel):
@@ -35,6 +38,7 @@ class GitHubMCPServer:
         self.owner = Config.GITHUB_OWNER
         self.repo = Config.GITHUB_REPO
         self.token = Config.GITHUB_TOKEN
+        self.progress_callback: Optional[ProgressCallback] = None
         
         # Set up authentication
         self.headers = {
@@ -43,6 +47,16 @@ class GitHubMCPServer:
         }
         
         self._validate_connection()
+    
+    def set_progress_callback(self, callback: Optional[ProgressCallback]):
+        """Set a callback function for progress updates."""
+        self.progress_callback = callback
+    
+    def _report_progress(self, message: str):
+        """Report progress via callback if set, otherwise print."""
+        if self.progress_callback:
+            self.progress_callback(message)
+        print(message)
     
     def _validate_connection(self):
         """Validate connection to GitHub."""
@@ -55,8 +69,121 @@ class GitHubMCPServer:
         except Exception as e:
             raise ConnectionError(f"Failed to connect to GitHub: {str(e)}")
     
-    def get_bugs(
+    def get_issues(
         self, 
+        owner: Optional[str] = None,
+        repo: Optional[str] = None,
+        state: str = "open",
+        labels: Optional[List[str]] = None,
+        max_results: int = 100
+    ) -> List[GitHubIssue]:
+        """
+        Retrieve issues from GitHub with pagination support for large results.
+        
+        Args:
+            owner: Repository owner (default from config)
+            repo: Repository name (default from config)
+            state: Issue state ('open', 'closed', 'all')
+            labels: Labels to filter by (optional)
+            max_results: Maximum number of issues to return (supports >100 via pagination)
+            
+        Returns:
+            List of GitHubIssue objects
+        """
+        import time
+        
+        owner = owner or self.owner
+        repo = repo or self.repo
+        
+        all_issues = []
+        page = 1
+        per_page = min(100, max_results)  # GitHub max per page is 100
+        
+        self._report_progress(f"📥 Fetching up to {max_results} {state} issues from GitHub: {owner}/{repo}")
+        
+        while len(all_issues) < max_results:
+            try:
+                # Build query parameters
+                params = {
+                    'state': state,
+                    'per_page': per_page,
+                    'page': page,
+                    'sort': 'created',
+                    'direction': 'desc'
+                }
+                
+                if labels:
+                    params['labels'] = ','.join(labels)
+                
+                # Fetch issues with timeout
+                url = f"{self.base_url}/repos/{owner}/{repo}/issues"
+                response = requests.get(url, headers=self.headers, params=params, timeout=30)
+                
+                # Check for rate limiting
+                if response.status_code == 403:
+                    remaining = response.headers.get('X-RateLimit-Remaining', '0')
+                    reset_time = response.headers.get('X-RateLimit-Reset', '0')
+                    if remaining == '0':
+                        reset_dt = time.strftime('%H:%M:%S', time.localtime(int(reset_time)))
+                        self._report_progress(f"  ⚠️ Rate limit reached. Resets at {reset_dt}. Returning {len(all_issues)} issues collected so far.")
+                        break
+                
+                response.raise_for_status()
+                
+                issues_data = response.json()
+                
+                # No more issues
+                if not issues_data:
+                    break
+                
+                # Convert to GitHubIssue objects
+                for issue in issues_data:
+                    # Skip pull requests (they appear in issues endpoint)
+                    if 'pull_request' in issue:
+                        continue
+                    
+                    github_issue = GitHubIssue(
+                        number=issue['number'],
+                        title=issue['title'],
+                        body=issue.get('body', None),
+                        state=issue['state'],
+                        labels=[label['name'] for label in issue.get('labels', [])],
+                        assignee=issue['assignee']['login'] if issue.get('assignee') else None,
+                        assignees=[a['login'] for a in issue.get('assignees', [])],
+                        created_by=issue['user']['login'] if issue.get('user') else None,
+                        created_at=issue['created_at'],
+                        updated_at=issue['updated_at'],
+                        closed_at=issue.get('closed_at', None),
+                        milestone=issue['milestone']['title'] if issue.get('milestone') else None,
+                        html_url=issue['html_url']
+                    )
+                    all_issues.append(github_issue)
+                    
+                    # Stop if we've reached max_results
+                    if len(all_issues) >= max_results:
+                        break
+                
+                # If we got fewer than per_page, no more pages
+                if len(issues_data) < per_page:
+                    break
+                
+                page += 1
+                # Calculate and report progress percentage
+                progress_pct = min(100, int((len(all_issues) / max_results) * 100))
+                self._report_progress(f"  📊 Fetched page {page-1}: {len(all_issues)}/{max_results} issues ({progress_pct}%)")
+                
+            except requests.exceptions.Timeout:
+                self._report_progress(f"  ⚠️ Request timeout on page {page}. Returning {len(all_issues)} issues collected so far.")
+                break
+            except requests.exceptions.RequestException as e:
+                self._report_progress(f"  ⚠️ Request error: {e}. Returning {len(all_issues)} issues collected so far.")
+                break
+        
+        self._report_progress(f"✅ Retrieved {len(all_issues)} issues from GitHub (100%)")
+        return all_issues
+    
+    def get_bugs(
+        self,
         owner: Optional[str] = None,
         repo: Optional[str] = None,
         state: str = "open",
