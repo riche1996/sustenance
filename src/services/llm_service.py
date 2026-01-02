@@ -60,6 +60,10 @@ class AzureOpenAIProvider(BaseLLMProvider):
             timeout=120.0
         )
         
+        # Retry settings for rate limiting
+        self.max_retries = 3
+        self.base_delay = 2  # seconds
+        
         logger.info(f"Azure OpenAI provider initialized (deployment: {deployment})")
     
     def _get_api_url(self) -> str:
@@ -67,6 +71,46 @@ class AzureOpenAIProvider(BaseLLMProvider):
         if self.is_full_url:
             return self.full_url
         return f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
+    
+    def _make_request_with_retry(self, url: str, headers: Dict, json_data: Dict, 
+                                  stream: bool = False) -> Any:
+        """Make HTTP request with retry logic for rate limiting."""
+        import time
+        
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                if stream:
+                    return self.http_client.stream("POST", url, headers=headers, json=json_data)
+                else:
+                    response = self.http_client.post(url, headers=headers, json=json_data)
+                    
+                    # Check for rate limiting
+                    if response.status_code == 429:
+                        retry_after = response.headers.get('Retry-After', self.base_delay * (2 ** attempt))
+                        try:
+                            wait_time = int(retry_after)
+                        except (ValueError, TypeError):
+                            wait_time = self.base_delay * (2 ** attempt)
+                        
+                        if attempt < self.max_retries:
+                            logger.warning(f"Rate limited (429). Retrying in {wait_time}s... (attempt {attempt + 1}/{self.max_retries})")
+                            time.sleep(wait_time)
+                            continue
+                    
+                    response.raise_for_status()
+                    return response
+                    
+            except Exception as e:
+                last_error = e
+                if "429" in str(e) and attempt < self.max_retries:
+                    wait_time = self.base_delay * (2 ** attempt)
+                    logger.warning(f"Rate limited. Retrying in {wait_time}s... (attempt {attempt + 1}/{self.max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                raise
+        
+        raise last_error or Exception("Max retries exceeded")
     
     def chat_completion(self, messages: List[Dict[str, str]], 
                        max_tokens: int = 4096,
@@ -90,19 +134,18 @@ class AzureOpenAIProvider(BaseLLMProvider):
             if system:
                 all_messages.insert(0, {"role": "system", "content": system})
             
-            response = self.http_client.post(
+            response = self._make_request_with_retry(
                 self._get_api_url(),
                 headers={
                     "Content-Type": "application/json",
                     "api-key": self.api_key
                 },
-                json={
+                json_data={
                     "messages": all_messages,
                     "max_tokens": max_tokens,
                     "temperature": temperature
                 }
             )
-            response.raise_for_status()
             result = response.json()
             return {"content": result["choices"][0]["message"]["content"]}
             
@@ -125,39 +168,65 @@ class AzureOpenAIProvider(BaseLLMProvider):
             Response text chunks
         """
         import json
+        import time
         
-        try:
-            with self.http_client.stream(
-                "POST",
-                self._get_api_url(),
-                headers={
-                    "Content-Type": "application/json",
-                    "api-key": self.api_key
-                },
-                json={
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "stream": True
-                }
-            ) as response:
-                response.raise_for_status()
-                
-                for line in response.iter_lines():
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data == "[DONE]":
-                            break
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                with self.http_client.stream(
+                    "POST",
+                    self._get_api_url(),
+                    headers={
+                        "Content-Type": "application/json",
+                        "api-key": self.api_key
+                    },
+                    json={
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "stream": True
+                    }
+                ) as response:
+                    # Check for rate limiting before processing
+                    if response.status_code == 429:
+                        retry_after = response.headers.get('Retry-After', self.base_delay * (2 ** attempt))
                         try:
-                            chunk = json.loads(data)
-                            if chunk["choices"] and chunk["choices"][0].get("delta", {}).get("content"):
-                                yield chunk["choices"][0]["delta"]["content"]
-                        except json.JSONDecodeError:
+                            wait_time = int(retry_after)
+                        except (ValueError, TypeError):
+                            wait_time = self.base_delay * (2 ** attempt)
+                        
+                        if attempt < self.max_retries:
+                            logger.warning(f"Rate limited (429). Retrying in {wait_time}s... (attempt {attempt + 1}/{self.max_retries})")
+                            time.sleep(wait_time)
                             continue
-                            
-        except Exception as e:
-            logger.error(f"Azure OpenAI streaming error: {e}")
-            raise
+                    
+                    response.raise_for_status()
+                    
+                    for line in response.iter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                if chunk["choices"] and chunk["choices"][0].get("delta", {}).get("content"):
+                                    yield chunk["choices"][0]["delta"]["content"]
+                            except json.JSONDecodeError:
+                                continue
+                    return  # Success, exit retry loop
+                    
+            except Exception as e:
+                last_error = e
+                if "429" in str(e) and attempt < self.max_retries:
+                    wait_time = self.base_delay * (2 ** attempt)
+                    logger.warning(f"Rate limited. Retrying in {wait_time}s... (attempt {attempt + 1}/{self.max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"Azure OpenAI streaming error: {e}")
+                raise
+        
+        if last_error:
+            raise last_error
 
 
 class AnthropicProvider(BaseLLMProvider):
