@@ -3484,14 +3484,17 @@ Examples of INCORRECT responses:
             llm_messages.append({"role": "user", "content": message})
             
             # Call the LLM provider (Azure OpenAI or Anthropic)
-            llm_text = llm_provider.chat_completion(
+            llm_response = llm_provider.chat_completion(
                 messages=llm_messages,
                 max_tokens=1000,
                 temperature=0.3
             )
             
+            # Extract text content from response dict
+            llm_text = llm_response.get("content", "") if isinstance(llm_response, dict) else str(llm_response)
+            
             # DEBUG: Print what LLM returns
-            print(f"DEBUG LLM response: {llm_text[:500]}", flush=True)
+            print(f"DEBUG LLM response: {llm_text[:500] if llm_text else 'empty'}", flush=True)
             
             # Check if response is JSON (action) or plain text (conversational)
             try:
