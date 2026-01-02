@@ -50,6 +50,9 @@ class IssueHistoryService:
                     },
                     'mappings': {
                         'properties': {
+                            # Document type: 'issue' or 'attachment'
+                            'document_type': {'type': 'keyword'},
+                            
                             # Issue identifiers
                             'issue_id': {'type': 'keyword'},
                             'issue_hash': {'type': 'keyword'},  # For deduplication
@@ -80,9 +83,20 @@ class IssueHistoryService:
                             'html_url': {'type': 'keyword'},
                             'comments_count': {'type': 'integer'},
                             
+                            # Attachment-specific fields
+                            'filename': {'type': 'keyword'},
+                            'file_type': {'type': 'keyword'},
+                            'content_type': {'type': 'keyword'},
+                            'file_size': {'type': 'integer'},
+                            'text_content': {'type': 'text', 'analyzer': 'standard'},
+                            'text_length': {'type': 'integer'},
+                            'text_preview': {'type': 'text'},
+                            'attachment_url': {'type': 'keyword'},
+                            
                             # Indexing metadata
                             'indexed_at': {'type': 'date'},
                             'last_synced': {'type': 'date'},
+                            'sync_source': {'type': 'keyword'},
                             
                             # Embedding for semantic search
                             'embedding': {

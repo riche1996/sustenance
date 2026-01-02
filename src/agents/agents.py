@@ -97,12 +97,130 @@ class JiraAgent(BaseAgent):
             "get_worklogs",
             # Subtasks (2)
             "create_subtask",
-            "get_subtasks"
+            "get_subtasks",
+            # Attachments with indexing (1)
+            "fetch_issues_with_attachments"
         ]
     
     def set_progress_callback(self, callback):
         """Set progress callback to propagate to Jira client."""
         self.jira.set_progress_callback(callback)
+    
+    def _process_and_index_attachments_background(self, issues: List[Any]) -> None:
+        """
+        Process and index attachments for a list of issues in the background.
+        This runs silently without user-facing progress updates.
+        
+        Args:
+            issues: List of issue objects
+        """
+        try:
+            from src.services.attachment_service import AttachmentService
+            from src.services.github_opensearch_sync import GitHubOpenSearchSync
+            import logging
+            
+            logger = logging.getLogger(__name__)
+            
+            print(f"\n{'='*60}")
+            print(f"📎 [BACKGROUND] Starting Jira attachment processing...")
+            print(f"   Processing {len(issues)} issues for attachments")
+            print(f"{'='*60}")
+            
+            attachment_service = AttachmentService()
+            sync_service = GitHubOpenSearchSync(enable_embeddings=True)
+            
+            if not sync_service.is_connected():
+                print("❌ [BACKGROUND] OpenSearch not available for attachment indexing")
+                logger.warning("OpenSearch not available for attachment indexing")
+                return
+            
+            attachment_docs = []
+            auth_header = self.jira.get_attachment_auth_header()
+            total_attachments_found = 0
+            
+            for issue in issues:
+                issue_key = issue.key if hasattr(issue, 'key') else issue.get('key', issue.get('id', 'unknown'))
+                
+                # Get attachments for this issue
+                attachments = self.jira.get_attachments(issue_key)
+                
+                if not attachments:
+                    continue
+                
+                total_attachments_found += len(attachments)
+                print(f"   📄 Found {len(attachments)} attachment(s) for issue {issue_key}")
+                
+                # Process each attachment
+                processed = attachment_service.process_attachments(
+                    attachments, 
+                    auth_header=auth_header,
+                    max_attachments=10
+                )
+                
+                for att in processed:
+                    if att.get('success'):
+                        filename = att.get('filename', 'unknown')
+                        print(f"      ✅ Extracted text from: {filename} ({att.get('size', 0)} bytes)")
+                        doc = attachment_service.create_attachment_document(
+                            issue_id=issue_key,
+                            attachment=att,
+                            owner='jira',
+                            repo=self.jira.jira_client._options.get('server', 'jira') if self.jira.jira_client else 'jira'
+                        )
+                        doc['sync_source'] = 'jira'
+                        attachment_docs.append(doc)
+                    else:
+                        print(f"      ⚠️ Failed to process: {att.get('filename', 'unknown')}")
+            
+            # Bulk index all attachments
+            if attachment_docs:
+                print(f"\n🔄 [BACKGROUND] Generating embeddings for {len(attachment_docs)} attachments...")
+                result = sync_service.bulk_index_attachments(attachment_docs)
+                indexed = result.get('success', 0)
+                embeddings = result.get('embeddings_generated', 0)
+                print(f"✅ [BACKGROUND] Indexed {indexed} attachments with {embeddings} embeddings")
+                logger.info(f"Background indexed {len(attachment_docs)} Jira attachments")
+            else:
+                print(f"ℹ️ [BACKGROUND] No attachments found to process")
+            
+            print(f"{'='*60}")
+            print(f"📎 [BACKGROUND] Jira attachment processing complete!")
+            print(f"   Total attachments found: {total_attachments_found}")
+            print(f"   Successfully indexed: {len(attachment_docs)}")
+            print(f"{'='*60}\n")
+            
+            sync_service.close()
+            
+        except Exception as e:
+            import logging
+            print(f"❌ [BACKGROUND] Error processing attachments: {e}")
+            logging.getLogger(__name__).error(f"Background attachment processing error: {e}")
+    
+    def _process_and_index_attachments(self, issues: List[Any], progress_callback=None) -> Dict[str, Any]:
+        """
+        Start background attachment processing (non-blocking).
+        
+        Args:
+            issues: List of issue objects
+            progress_callback: Ignored - kept for API compatibility
+            
+        Returns:
+            Summary indicating background processing started
+        """
+        import threading
+        
+        # Start background thread for attachment processing
+        thread = threading.Thread(
+            target=self._process_and_index_attachments_background,
+            args=(issues,),
+            daemon=True
+        )
+        thread.start()
+        
+        return {
+            'success': True,
+            'message': 'Attachment processing started in background'
+        }
     
     def execute(self, action: str, **kwargs) -> Dict[str, Any]:
         """Execute Jira-specific action."""
@@ -132,6 +250,43 @@ class JiraAgent(BaseAgent):
                     max_results=kwargs.get('max_results', 10),
                     issue_type=kwargs.get('issue_type')
                 )
+                
+                # Start background attachment processing (non-blocking)
+                include_attachments = kwargs.get('include_attachments', False)
+                if include_attachments and bugs:
+                    self._process_and_index_attachments(bugs)  # Runs in background thread
+                
+                # Return issues immediately to user
+                return {
+                    "success": True,
+                    "data": [self._format_bug(bug) for bug in bugs],
+                    "count": len(bugs)
+                }
+            
+            elif action == "fetch_issues_with_attachments":
+                # Fetch issues and their attachments, indexing to vector DB
+                status_param = kwargs.get('status') or kwargs.get('state')
+                status = None
+                if status_param:
+                    status_lower = status_param.lower() if isinstance(status_param, str) else None
+                    if status_lower in ['all', 'open', 'closed']:
+                        status = None
+                    elif isinstance(status_param, str):
+                        status = [status_param]
+                    elif isinstance(status_param, list):
+                        status = status_param
+                
+                bugs = self.jira.get_bugs(
+                    status=status,
+                    max_results=kwargs.get('max_results', 10),
+                    issue_type=kwargs.get('issue_type')
+                )
+                
+                # Start background attachment processing (non-blocking)
+                if bugs:
+                    self._process_and_index_attachments(bugs)  # Runs in background thread
+                
+                # Return issues immediately to user
                 return {
                     "success": True,
                     "data": [self._format_bug(bug) for bug in bugs],
@@ -654,6 +809,7 @@ class TfsAgent(BaseAgent):
         self.capabilities = [
             # Work Item Management (8)
             "fetch_bugs",
+            "fetch_issues_with_attachments",  # Fetch work items with attachments indexed to vector DB
             "get_bug_details",
             "create_work_item",
             "edit_work_item",
@@ -707,6 +863,135 @@ class TfsAgent(BaseAgent):
         if hasattr(self.tfs, 'set_progress_callback'):
             self.tfs.set_progress_callback(callback)
     
+    def _process_and_index_attachments_background(self, work_items: List[Any]) -> None:
+        """
+        Process and index attachments for TFS work items in the background.
+        This runs silently without user-facing progress updates.
+        
+        Args:
+            work_items: List of work item objects
+        """
+        try:
+            from src.services.attachment_service import AttachmentService
+            from src.services.github_opensearch_sync import GitHubOpenSearchSync
+            import logging
+            
+            logger = logging.getLogger(__name__)
+            
+            print(f"\n{'='*60}")
+            print(f"📎 [BACKGROUND] Starting TFS attachment processing...")
+            print(f"   Processing {len(work_items)} work items for attachments")
+            print(f"{'='*60}")
+            
+            attachment_service = AttachmentService()
+            sync_service = GitHubOpenSearchSync(enable_embeddings=True)
+            
+            if not sync_service.is_connected():
+                print("❌ [BACKGROUND] OpenSearch not available for attachment indexing")
+                logger.warning("OpenSearch not available for attachment indexing")
+                return
+            
+            attachment_docs = []
+            auth_header = self.tfs.get_attachment_auth_header() if hasattr(self.tfs, 'get_attachment_auth_header') else None
+            org = getattr(self.tfs, 'organization', 'tfs')
+            project = getattr(self.tfs, 'project', 'unknown')
+            total_attachments_found = 0
+            
+            for work_item in work_items:
+                work_item_id = str(work_item.id) if hasattr(work_item, 'id') else str(work_item.get('id', 'unknown'))
+                
+                # Get attachments for this work item
+                attachments = self.tfs.get_attachments(int(work_item_id))
+                
+                # Convert TfsAttachment objects to dict format
+                attachment_dicts = []
+                for att in attachments:
+                    attachment_dicts.append({
+                        'id': att.id,
+                        'filename': att.name,
+                        'url': att.url,
+                        'size': att.size,
+                        'mime_type': None
+                    })
+                
+                if not attachment_dicts:
+                    continue
+                
+                total_attachments_found += len(attachment_dicts)
+                print(f"   📄 Found {len(attachment_dicts)} attachment(s) for work item #{work_item_id}")
+                
+                # Process each attachment
+                processed = attachment_service.process_attachments(
+                    attachment_dicts, 
+                    auth_header=auth_header,
+                    max_attachments=10
+                )
+                
+                for att in processed:
+                    if att.get('success'):
+                        filename = att.get('filename', 'unknown')
+                        print(f"      ✅ Extracted text from: {filename} ({att.get('size', 0)} bytes)")
+                        doc = attachment_service.create_attachment_document(
+                            issue_id=work_item_id,
+                            attachment=att,
+                            owner=org,
+                            repo=project
+                        )
+                        doc['sync_source'] = 'tfs'
+                        attachment_docs.append(doc)
+                    else:
+                        print(f"      ⚠️ Failed to process: {att.get('filename', 'unknown')}")
+            
+            # Bulk index all attachments
+            if attachment_docs:
+                print(f"\n🔄 [BACKGROUND] Generating embeddings for {len(attachment_docs)} attachments...")
+                result = sync_service.bulk_index_attachments(attachment_docs)
+                indexed = result.get('success', 0)
+                embeddings = result.get('embeddings_generated', 0)
+                print(f"✅ [BACKGROUND] Indexed {indexed} attachments with {embeddings} embeddings")
+                logger.info(f"Background indexed {len(attachment_docs)} TFS attachments")
+            else:
+                print(f"ℹ️ [BACKGROUND] No attachments found to process")
+            
+            print(f"{'='*60}")
+            print(f"📎 [BACKGROUND] TFS attachment processing complete!")
+            print(f"   Total attachments found: {total_attachments_found}")
+            print(f"   Successfully indexed: {len(attachment_docs)}")
+            print(f"{'='*60}\n")
+            
+            sync_service.close()
+            
+        except Exception as e:
+            import logging
+            print(f"❌ [BACKGROUND] Error processing attachments: {e}")
+            logging.getLogger(__name__).error(f"Background attachment processing error: {e}")
+    
+    def _process_and_index_attachments(self, work_items: List[Any], progress_callback=None) -> Dict[str, Any]:
+        """
+        Start background attachment processing (non-blocking).
+        
+        Args:
+            work_items: List of work item objects
+            progress_callback: Ignored - kept for API compatibility
+            
+        Returns:
+            Summary indicating background processing started
+        """
+        import threading
+        
+        # Start background thread for attachment processing
+        thread = threading.Thread(
+            target=self._process_and_index_attachments_background,
+            args=(work_items,),
+            daemon=True
+        )
+        thread.start()
+        
+        return {
+            'success': True,
+            'message': 'Attachment processing started in background'
+        }
+    
     def execute(self, action: str, **kwargs) -> Dict[str, Any]:
         """Execute TFS-specific action."""
         try:
@@ -717,6 +1002,32 @@ class TfsAgent(BaseAgent):
                     state=kwargs.get('state'),
                     max_results=kwargs.get('max_results', 10)
                 )
+                
+                # Start background attachment processing (non-blocking)
+                include_attachments = kwargs.get('include_attachments', False)
+                if include_attachments and bugs:
+                    self._process_and_index_attachments(bugs)  # Runs in background thread
+                
+                # Return work items immediately to user
+                return {
+                    "success": True,
+                    "data": [self._format_work_item(bug) for bug in bugs],
+                    "count": len(bugs)
+                }
+            
+            elif action == "fetch_issues_with_attachments":
+                # Fetch work items and their attachments, indexing to vector DB
+                bugs = self.tfs.get_bugs(
+                    project=kwargs.get('project'),
+                    state=kwargs.get('state'),
+                    max_results=kwargs.get('max_results', 10)
+                )
+                
+                # Start background attachment processing (non-blocking)
+                if bugs:
+                    self._process_and_index_attachments(bugs)  # Runs in background thread
+                
+                # Return work items immediately to user
                 return {
                     "success": True,
                     "data": [self._format_work_item(bug) for bug in bugs],
@@ -1209,6 +1520,7 @@ class GitHubAgent(BaseAgent):
             # Issue Management
             "fetch_bugs",
             "fetch_issues",  # Fetch all issues with pagination (supports large results)
+            "fetch_issues_with_attachments",  # Fetch issues with attachments indexed to vector DB
             "get_bug_details",
             "create_issue",
             "edit_issue",
@@ -1264,6 +1576,128 @@ class GitHubAgent(BaseAgent):
         """Set progress callback to propagate to GitHub client."""
         self.github.set_progress_callback(callback)
     
+    def _process_and_index_attachments_background(self, issues: List[Any]) -> None:
+        """
+        Process and index attachments for GitHub issues in the background.
+        This runs silently without user-facing progress updates.
+        
+        GitHub issues don't have traditional attachments, but they can have:
+        - Images/files embedded in the issue body (uploaded to GitHub)
+        - Links to external files
+        
+        Args:
+            issues: List of issue objects
+        """
+        try:
+            from src.services.attachment_service import AttachmentService
+            from src.services.github_opensearch_sync import GitHubOpenSearchSync
+            import logging
+            
+            logger = logging.getLogger(__name__)
+            
+            attachment_service = AttachmentService()
+            sync_service = GitHubOpenSearchSync(enable_embeddings=True)
+            
+            if not sync_service.is_connected():
+                print("❌ [BACKGROUND] OpenSearch not available for attachment indexing")
+                logger.warning("OpenSearch not available for attachment indexing")
+                return
+            
+            print(f"\n{'='*60}")
+            print(f"📎 [BACKGROUND] Starting GitHub attachment processing...")
+            print(f"   Processing {len(issues)} issues for attachments")
+            print(f"{'='*60}")
+            
+            attachment_docs = []
+            auth_header = self.github.get_attachment_auth_header()
+            owner = self.github.owner or 'github'
+            repo = self.github.repo or 'unknown'
+            total_attachments_found = 0
+            
+            for issue in issues:
+                issue_id = str(issue.number) if hasattr(issue, 'number') else str(issue.get('number', issue.get('id', 'unknown')))
+                
+                # Get attachments extracted from issue body (GitHub-specific)
+                attachments = self.github.get_issue_attachments(int(issue_id))
+                
+                if not attachments:
+                    continue
+                
+                total_attachments_found += len(attachments)
+                print(f"   📄 Found {len(attachments)} attachment(s) for issue #{issue_id}")
+                
+                # Process each attachment
+                processed = attachment_service.process_attachments(
+                    attachments, 
+                    auth_header=auth_header,
+                    max_attachments=10
+                )
+                
+                for att in processed:
+                    if att.get('success'):
+                        filename = att.get('filename', 'unknown')
+                        print(f"      ✅ Extracted text from: {filename} ({att.get('size', 0)} bytes)")
+                        doc = attachment_service.create_attachment_document(
+                            issue_id=issue_id,
+                            attachment=att,
+                            owner=owner,
+                            repo=repo
+                        )
+                        doc['sync_source'] = 'github'
+                        attachment_docs.append(doc)
+                    else:
+                        print(f"      ⚠️ Failed to process: {att.get('filename', 'unknown')}")
+            
+            # Bulk index all attachments
+            if attachment_docs:
+                print(f"\n🔄 [BACKGROUND] Generating embeddings for {len(attachment_docs)} attachments...")
+                result = sync_service.bulk_index_attachments(attachment_docs)
+                indexed = result.get('success', 0)
+                embeddings = result.get('embeddings_generated', 0)
+                print(f"✅ [BACKGROUND] Indexed {indexed} attachments with {embeddings} embeddings")
+                logger.info(f"Background indexed {len(attachment_docs)} GitHub attachments")
+            else:
+                print(f"ℹ️ [BACKGROUND] No attachments found to process")
+            
+            print(f"{'='*60}")
+            print(f"📎 [BACKGROUND] GitHub attachment processing complete!")
+            print(f"   Total attachments found: {total_attachments_found}")
+            print(f"   Successfully indexed: {len(attachment_docs)}")
+            print(f"{'='*60}\n")
+            
+            sync_service.close()
+            
+        except Exception as e:
+            import logging
+            print(f"❌ [BACKGROUND] Error processing attachments: {e}")
+            logging.getLogger(__name__).error(f"Background attachment processing error: {e}")
+    
+    def _process_and_index_attachments(self, issues: List[Any], progress_callback=None) -> Dict[str, Any]:
+        """
+        Start background attachment processing (non-blocking).
+        
+        Args:
+            issues: List of issue objects
+            progress_callback: Ignored - kept for API compatibility
+            
+        Returns:
+            Summary indicating background processing started
+        """
+        import threading
+        
+        # Start background thread for attachment processing
+        thread = threading.Thread(
+            target=self._process_and_index_attachments_background,
+            args=(issues,),
+            daemon=True
+        )
+        thread.start()
+        
+        return {
+            'success': True,
+            'message': 'Attachment processing started in background'
+        }
+    
     def execute(self, action: str, **kwargs) -> Dict[str, Any]:
         """Execute GitHub-specific action."""
         try:
@@ -1274,6 +1708,13 @@ class GitHubAgent(BaseAgent):
                     labels=kwargs.get('labels', ['type: bug']),  # Default to bug label
                     max_results=kwargs.get('max_results', 10)
                 )
+                
+                # Start background attachment processing (non-blocking)
+                include_attachments = kwargs.get('include_attachments', False)
+                if include_attachments and bugs:
+                    self._process_and_index_attachments(bugs)  # Runs in background thread
+                
+                # Return issues immediately to user
                 return {
                     "success": True,
                     "data": [self._format_bug(bug) for bug in bugs],
@@ -1287,6 +1728,32 @@ class GitHubAgent(BaseAgent):
                     labels=kwargs.get('labels'),  # No default label filter
                     max_results=kwargs.get('max_results', 10)  # Default to 10 for generic queries
                 )
+                
+                # Start background attachment processing (non-blocking)
+                include_attachments = kwargs.get('include_attachments', False)
+                if include_attachments and issues:
+                    self._process_and_index_attachments(issues)  # Runs in background thread
+                
+                # Return issues immediately to user
+                return {
+                    "success": True,
+                    "data": [self._format_bug(issue) for issue in issues],
+                    "count": len(issues)
+                }
+            
+            elif action == "fetch_issues_with_attachments":
+                # Fetch issues and their attachments, indexing to vector DB
+                issues = self.github.get_issues(
+                    state=kwargs.get('state', 'open'),
+                    labels=kwargs.get('labels'),
+                    max_results=kwargs.get('max_results', 10)
+                )
+                
+                # Start background attachment processing (non-blocking)
+                if issues:
+                    self._process_and_index_attachments(issues)  # Runs in background thread
+                
+                # Return issues immediately to user
                 return {
                     "success": True,
                     "data": [self._format_bug(issue) for issue in issues],
@@ -2754,6 +3221,7 @@ You can help users with:
 - **Releases & Tags**: List, create releases and tags
 - **Code Search**: Search code within repositories
 - **Code Analysis**: Analyze code related to bugs
+- **Attachments**: Automatically fetch and index issue attachments to vector database for semantic search
 
 **How to Respond:**
 Analyze the user's request and respond naturally. If you need to perform an action:
@@ -2761,13 +3229,14 @@ Analyze the user's request and respond naturally. If you need to perform an acti
 **IMPORTANT:** For generic queries without specific counts (e.g., "pull issues from github", "show me issues", "list bugs"), ALWAYS use max_results: 10. Only use larger values when the user explicitly requests more.
 
 1. **For listing/fetching issues:** Respond ONLY with JSON (no explanation):
-   {{"action": "fetch_bugs", "tracker": "jira|github|tfs", "max_results": 10, "issue_type": "Bug|Story|Task|Epic", "state": "open|closed|all"}}
+   {{"action": "fetch_bugs", "tracker": "jira|github|tfs", "max_results": 10, "issue_type": "Bug|Story|Task|Epic", "state": "open|closed|all", "include_attachments": true}}
    OR for fetching all issues (not just bugs):
-   {{"action": "fetch_issues", "tracker": "github", "max_results": 10, "state": "open|closed|all"}}
+   {{"action": "fetch_issues", "tracker": "github", "max_results": 10, "state": "open|closed|all", "include_attachments": true}}
    NOTE: Use max_results: 10 for generic queries. Only use larger values (e.g., 100, 500, 2000) when user explicitly asks for more.
+   **IMPORTANT:** Always include "include_attachments": true to automatically download and index issue attachments to the vector database.
    
    **For fetching from a specific GitHub repo (when user provides a URL):**
-   {{"action": "fetch_issues", "tracker": "github", "repo_url": "https://github.com/owner/repo", "max_results": 500, "state": "all"}}
+   {{"action": "fetch_issues", "tracker": "github", "repo_url": "https://github.com/owner/repo", "max_results": 500, "state": "all", "include_attachments": true}}
    Extract owner and repo from URLs like: https://github.com/langchain-ai/langchain or https://github.com/langchain-ai/langchain/issues
    Example: "pull 500 issues from https://github.com/langchain-ai/langchain" → repo_owner: "langchain-ai", repo_name: "langchain"
 
@@ -3094,8 +3563,20 @@ Examples of INCORRECT responses:
             max_results = action_data.get("max_results", 10)
             issue_type = action_data.get("issue_type")
             state = action_data.get("state")  # Don't default to "open" - let each tracker handle it
+            include_attachments = action_data.get("include_attachments", True)  # Default to True for attachment indexing
             
-            result = self.route("fetch_bugs", max_results=max_results, tracker=tracker, issue_type=issue_type, state=state)
+            # Get progress callback for streaming updates
+            progress_callback = getattr(self, '_progress_callback', None)
+            
+            result = self.route(
+                "fetch_bugs", 
+                max_results=max_results, 
+                tracker=tracker, 
+                issue_type=issue_type, 
+                state=state,
+                include_attachments=include_attachments,
+                progress_callback=progress_callback
+            )
             
             if result["success"]:
                 bugs = result["data"]
@@ -3119,6 +3600,11 @@ Examples of INCORRECT responses:
                     response_msg += f"{emoji} **{bug['id']}**: {bug['title']}\n"
                     response_msg += f"   Status: {bug.get('status') or bug.get('state', 'Unknown')}\n\n"
                 
+                # Add attachment processing summary if available
+                attachments_info = result.get('attachments')
+                if attachments_info and attachments_info.get('success'):
+                    response_msg += f"\n📎 **Attachments:** {attachments_info.get('message', 'Processed')}\n"
+                
                 self._store_conversation(session_id, user_message, response_msg)
                 return {"success": True, "message": response_msg, "data": result["data"], "tracker_used": tracker_used}
             else:
@@ -3131,6 +3617,10 @@ Examples of INCORRECT responses:
             state = action_data.get("state", "open")
             labels = action_data.get("labels")
             store_embeddings = action_data.get("store_embeddings", True)  # Auto-store by default
+            include_attachments = action_data.get("include_attachments", True)  # Auto-index attachments
+            
+            # Get progress callback for streaming updates
+            progress_callback = getattr(self, '_progress_callback', None)
             
             # Check for custom repo (from URL or explicit params)
             custom_repo_owner = action_data.get("repo_owner")
@@ -3160,7 +3650,15 @@ Examples of INCORRECT responses:
                     print(f"🔀 Using custom repo: {custom_repo_owner}/{custom_repo_name}", flush=True)
             
             try:
-                result = self.route("fetch_issues", max_results=max_results, tracker=tracker, state=state, labels=labels)
+                result = self.route(
+                    "fetch_issues", 
+                    max_results=max_results, 
+                    tracker=tracker, 
+                    state=state, 
+                    labels=labels,
+                    include_attachments=include_attachments,
+                    progress_callback=progress_callback
+                )
                 
                 if result["success"]:
                     issues = result["data"]
@@ -3200,6 +3698,11 @@ Examples of INCORRECT responses:
                     # Add embedding info if stored
                     if embedding_result:
                         response_msg += f"\n📦 **Stored to vector database:** {embedding_result.get('indexed', 0)} new, {embedding_result.get('skipped', 0)} already existed\n"
+                    
+                    # Add attachment processing summary if available
+                    attachments_info = result.get('attachments')
+                    if attachments_info and attachments_info.get('success'):
+                        response_msg += f"📎 **Attachments:** {attachments_info.get('message', 'Processed')}\n"
                     
                     self._store_conversation(session_id, user_message, response_msg)
                     return {"success": True, "message": response_msg, "data": result["data"], "tracker_used": tracker_used, "embedding_result": embedding_result}

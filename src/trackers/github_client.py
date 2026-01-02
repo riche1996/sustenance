@@ -264,6 +264,74 @@ class GitHubMCPServer:
         print(f"✓ Retrieved {len(github_issues)} bugs from GitHub")
         return github_issues
     
+    def get_issue_attachments(self, issue_number: int, owner: Optional[str] = None, 
+                              repo: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Extract attachments from a GitHub issue body.
+        
+        GitHub issues don't have native attachments - files are uploaded and embedded
+        as links in the issue body. This extracts those links.
+        
+        Args:
+            issue_number: The issue number
+            owner: Repository owner (default from config)
+            repo: Repository name (default from config)
+            
+        Returns:
+            List of attachment info dicts
+        """
+        import re
+        
+        owner = owner or self.owner
+        repo = repo or self.repo
+        
+        issue = self.get_issue(issue_number, owner, repo)
+        body = issue.body or ''
+        
+        attachments = []
+        
+        # Pattern for GitHub user content uploads
+        # e.g., https://user-images.githubusercontent.com/... or https://github.com/user/repo/files/...
+        patterns = [
+            # User uploaded images/files
+            r'https://user-images\.githubusercontent\.com/[^\s\)]+',
+            r'https://github\.com/[^/]+/[^/]+/files/[^\s\)]+',
+            r'https://github\.com/[^/]+/[^/]+/assets/[^\s\)]+',
+            # Markdown image links
+            r'!\[[^\]]*\]\(([^)]+)\)',
+            # Regular links with file extensions
+            r'https?://[^\s\)]+\.(?:pdf|doc|docx|xls|xlsx|txt|log|zip|tar|gz|png|jpg|jpeg|gif)[^\s\)]*'
+        ]
+        
+        seen_urls = set()
+        for pattern in patterns:
+            matches = re.findall(pattern, body, re.IGNORECASE)
+            for match in matches:
+                url = match if isinstance(match, str) else match[0] if match else ''
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    
+                    # Extract filename from URL
+                    filename = url.split('/')[-1].split('?')[0]
+                    
+                    attachments.append({
+                        'content_url': url,
+                        'filename': filename,
+                        'source': 'github_body',
+                        'issue_number': issue_number
+                    })
+        
+        return attachments
+    
+    def get_attachment_auth_header(self) -> Dict[str, str]:
+        """
+        Get authentication header for downloading attachments.
+        
+        Returns:
+            Dictionary with Authorization header
+        """
+        return {'Authorization': f'token {self.token}'}
+    
     def get_issue(self, issue_number: int, owner: Optional[str] = None, repo: Optional[str] = None) -> GitHubIssue:
         """
         Get a specific issue by number.

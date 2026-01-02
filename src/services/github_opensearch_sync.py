@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Lazy load embedding service to avoid import issues
 _embedding_service = None
+_attachment_service = None
 
 # Local embedding model path (offline model)
 LOCAL_EMBEDDING_MODEL = r"C:\AIForce\offline_model\embedding_model\multi-qa-MiniLM-L6-cos-v1"
@@ -27,6 +28,20 @@ def get_embedding_service():
             logger.warning(f"Failed to initialize embedding service: {e}")
             _embedding_service = False  # Mark as failed
     return _embedding_service if _embedding_service else None
+
+
+def get_attachment_service():
+    """Get or create the attachment service singleton."""
+    global _attachment_service
+    if _attachment_service is None:
+        try:
+            from src.services.attachment_service import AttachmentService
+            _attachment_service = AttachmentService()
+            logger.info("Attachment service initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize attachment service: {e}")
+            _attachment_service = False  # Mark as failed
+    return _attachment_service if _attachment_service else None
 
 
 class GitHubOpenSearchSync:
@@ -193,6 +208,200 @@ class GitHubOpenSearchSync:
         except Exception as e:
             logger.error(f"Error creating index: {e}")
             return False
+    
+    def index_attachment(self, attachment_doc: Dict[str, Any], 
+                        index_name: str = "issue_history") -> Optional[str]:
+        """
+        Index a single attachment document in the issue_history index.
+        
+        Args:
+            attachment_doc: Attachment document (from AttachmentService.create_attachment_document)
+            index_name: Index name (default: issue_history to store with issues)
+            
+        Returns:
+            Document ID or None on failure
+        """
+        try:
+            doc_id = attachment_doc.get('document_id')
+            
+            # Ensure document_type is set to 'attachment'
+            attachment_doc['document_type'] = 'attachment'
+            
+            # Generate embedding for content if enabled
+            if self.enable_embeddings and 'embedding' not in attachment_doc:
+                content = attachment_doc.get('text_content', '') or attachment_doc.get('content', '')
+                if content:
+                    # Truncate for embedding (max ~5000 chars)
+                    embed_content = content[:5000]
+                    embedding = self._generate_embedding(embed_content)
+                    if embedding:
+                        attachment_doc['embedding'] = embedding
+            
+            # Add timestamp
+            attachment_doc['indexed_at'] = datetime.utcnow().isoformat()
+            
+            # Create text preview
+            content = attachment_doc.get('text_content', '') or attachment_doc.get('content', '')
+            attachment_doc['text_preview'] = content[:500] + '...' if len(content) > 500 else content
+            
+            response = self.client.index(
+                index=index_name,
+                id=doc_id,
+                body=attachment_doc,
+                refresh=True
+            )
+            
+            logger.info(f"Indexed attachment: {doc_id}")
+            return response['_id']
+            
+        except Exception as e:
+            logger.error(f"Error indexing attachment: {e}")
+            return None
+    
+    def bulk_index_attachments(self, attachment_docs: List[Dict[str, Any]],
+                               index_name: str = "issue_history",
+                               batch_size: int = 50) -> Dict[str, Any]:
+        """
+        Bulk index multiple attachment documents in the issue_history index.
+        
+        Args:
+            attachment_docs: List of attachment documents
+            index_name: Index name (default: issue_history to store with issues)
+            batch_size: Number of documents per bulk request
+            
+        Returns:
+            Summary dict with success count, failed count
+        """
+        if not attachment_docs:
+            return {'success': 0, 'failed': 0, 'message': 'No attachments to index'}
+        
+        total_success = 0
+        total_failed = 0
+        embeddings_generated = 0
+        
+        logger.info(f"Starting bulk index of {len(attachment_docs)} attachments to {index_name}")
+        
+        # Process in batches
+        for i in range(0, len(attachment_docs), batch_size):
+            batch = attachment_docs[i:i + batch_size]
+            
+            # Generate embeddings for batch if enabled
+            if self.enable_embeddings:
+                texts = [(doc.get('text_content', '') or doc.get('content', ''))[:5000] for doc in batch]
+                batch_embeddings = self._generate_embeddings_batch(texts)
+                
+                for j, doc in enumerate(batch):
+                    if batch_embeddings and j < len(batch_embeddings) and batch_embeddings[j]:
+                        doc['embedding'] = batch_embeddings[j]
+                        embeddings_generated += 1
+            
+            actions = []
+            for doc in batch:
+                # Ensure document_type is set
+                doc['document_type'] = 'attachment'
+                doc['indexed_at'] = datetime.utcnow().isoformat()
+                content = doc.get('text_content', '') or doc.get('content', '')
+                doc['text_preview'] = content[:500] + '...' if len(content) > 500 else content
+                
+                actions.append({
+                    '_index': index_name,
+                    '_id': doc.get('document_id'),
+                    '_source': doc
+                })
+            
+            try:
+                success, errors = bulk(
+                    self.client,
+                    actions,
+                    refresh=True,
+                    raise_on_error=False,
+                    raise_on_exception=False
+                )
+                total_success += success
+                
+                if errors:
+                    total_failed += len(errors)
+                    
+            except Exception as e:
+                logger.error(f"Bulk indexing error: {e}")
+                total_failed += len(actions)
+        
+        result = {
+            'success': total_success,
+            'failed': total_failed,
+            'embeddings_generated': embeddings_generated,
+            'total': len(attachment_docs),
+            'message': f"Indexed {total_success}/{len(attachment_docs)} attachments"
+        }
+        
+        logger.info(f"Bulk attachment index complete: {result['message']}")
+        return result
+    
+    def search_attachments(self, query: str, size: int = 10,
+                          issue_id: Optional[str] = None,
+                          owner: Optional[str] = None,
+                          repo: Optional[str] = None,
+                          index_name: str = "issue_history") -> List[Dict[str, Any]]:
+        """
+        Search attachment content in the issue_history index.
+        
+        Args:
+            query: Search query text
+            size: Number of results
+            issue_id: Filter by issue ID
+            owner: Filter by owner
+            repo: Filter by repository
+            index_name: Index name (default: issue_history)
+            
+        Returns:
+            List of matching attachment documents
+        """
+        try:
+            must = []
+            filter_clauses = [
+                {'term': {'document_type': 'attachment'}}  # Only search attachments
+            ]
+            
+            if query:
+                must.append({
+                    'multi_match': {
+                        'query': query,
+                        'fields': ['text_content^2', 'filename', 'text_preview'],
+                        'type': 'best_fields',
+                        'fuzziness': 'AUTO'
+                    }
+                })
+            
+            if issue_id:
+                filter_clauses.append({'term': {'issue_id': issue_id}})
+            if owner:
+                filter_clauses.append({'term': {'repo_owner': owner}})
+            if repo:
+                filter_clauses.append({'term': {'repo_name': repo}})
+            
+            search_body = {
+                'query': {
+                    'bool': {
+                        'must': must if must else [{'match_all': {}}],
+                        'filter': filter_clauses
+                    }
+                },
+                'size': size,
+                '_source': {
+                    'excludes': ['embedding', 'text_content']  # Exclude large fields
+                }
+            }
+            
+            response = self.client.search(index=index_name, body=search_body)
+            
+            return [
+                {**hit['_source'], '_score': hit['_score']}
+                for hit in response['hits']['hits']
+            ]
+            
+        except Exception as e:
+            logger.error(f"Error searching attachments: {e}")
+            return []
     
     def _generate_issue_id(self, owner: str, repo: str, number: int) -> str:
         """Generate a unique ID for an issue."""

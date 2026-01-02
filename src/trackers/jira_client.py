@@ -771,11 +771,45 @@ class JiraMCPServer:
                 'size': a.size,
                 'created': str(a.created),
                 'author': a.author.displayName,
-                'content_url': a.content
+                'content_url': a.content,
+                'mime_type': getattr(a, 'mimeType', None)
             } for a in attachments]
         except Exception as e:
             print(f"Failed to get attachments for {issue_key}: {str(e)}")
             return []
+    
+    def download_attachment(self, attachment_id: str) -> Optional[bytes]:
+        """
+        Download attachment content by ID.
+        
+        Args:
+            attachment_id: The attachment ID
+            
+        Returns:
+            Attachment content as bytes, or None on failure
+        """
+        if not self.jira_client:
+            raise ConnectionError("Not connected to Jira")
+        
+        try:
+            attachment = self.jira_client.attachment(attachment_id)
+            content = attachment.get()
+            return content
+        except Exception as e:
+            print(f"Failed to download attachment {attachment_id}: {str(e)}")
+            return None
+    
+    def get_attachment_auth_header(self) -> Dict[str, str]:
+        """
+        Get authentication header for downloading attachments.
+        
+        Returns:
+            Dictionary with Authorization header
+        """
+        import base64
+        auth_string = f"{Config.JIRA_EMAIL}:{Config.JIRA_API_TOKEN}"
+        encoded = base64.b64encode(auth_string.encode()).decode()
+        return {'Authorization': f'Basic {encoded}'}
     
     def delete_attachment(self, attachment_id: str) -> bool:
         """

@@ -634,6 +634,31 @@
             background: #3a3a4e;
         }
         
+        .stop-button {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #ff3b30 0%, #ff6b6b 100%);
+            border: none;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            flex-shrink: 0;
+        }
+        
+        .stop-button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 4px 16px rgba(255, 59, 48, 0.4);
+        }
+        
+        .stop-button.visible {
+            display: flex;
+        }
+        
         .input-hint {
             text-align: center;
             font-size: 12px;
@@ -767,6 +792,9 @@
                     <button class="send-button" id="sendButton" onclick="sendMessage()">
                         <span>↑</span>
                     </button>
+                    <button class="stop-button" id="stopButton" onclick="stopGeneration()" title="Stop generating">
+                        <span>■</span>
+                    </button>
                 </div>
                 <div class="input-hint">Press Enter to send • Shift + Enter for new line</div>
             </div>
@@ -778,9 +806,11 @@
         const chatContainer = document.getElementById('chatContainer');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
+        const stopButton = document.getElementById('stopButton');
         const welcomeScreen = document.getElementById('welcomeScreen');
         const sessionsList = document.getElementById('sessionsList');
         let isProcessing = false;
+        let currentAbortController = null;
                 // Generate or get session ID
         let sessionId = sessionStorage.getItem('chat_session_id');
         if (!sessionId) {
@@ -953,6 +983,25 @@
             sendMessage();
         }
         
+        // Stop generation
+        function stopGeneration() {
+            if (currentAbortController) {
+                currentAbortController.abort();
+                currentAbortController = null;
+            }
+        }
+        
+        // Update button visibility based on processing state
+        function updateButtonVisibility(processing) {
+            if (processing) {
+                sendButton.style.display = 'none';
+                stopButton.classList.add('visible');
+            } else {
+                sendButton.style.display = 'flex';
+                stopButton.classList.remove('visible');
+            }
+        }
+        
         // Send message
         async function sendMessage() {
             const message = messageInput.value.trim();
@@ -960,6 +1009,10 @@
             
             isProcessing = true;
             sendButton.disabled = true;
+            updateButtonVisibility(true);
+            
+            // Create new AbortController for this request
+            currentAbortController = new AbortController();
             
             // Hide welcome screen
             if (welcomeScreen) {
@@ -982,62 +1035,101 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ message: message, stream: true, session_id: sessionId })
+                    body: JSON.stringify({ message: message, stream: true, session_id: sessionId }),
+                    signal: currentAbortController.signal
                 });
+                
+                // Track streaming bubble for abort handling
+                let streamingBubble = null;
+                let fullMessage = '';
+                let abortHandled = false;
                 
                 // Handle streaming response
                 if (response.headers.get('content-type')?.includes('text/event-stream')) {
                     // Remove typing indicator and create streaming message bubble
                     typingMsg.remove();
-                    const streamingBubble = addStreamingMessage();
+                    streamingBubble = addStreamingMessage();
                     
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder();
                     let buffer = '';
-                    let fullMessage = '';
                     
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        
-                        buffer += decoder.decode(value, { stream: true });
-                        const lines = buffer.split('\n');
-                        buffer = lines.pop(); // Keep incomplete line in buffer
-                        
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                const data = line.slice(6);
-                                if (data === '[DONE]') {
-                                    break;
+                    // Listen for abort signal to cancel reader
+                    currentAbortController.signal.addEventListener('abort', () => {
+                        reader.cancel();
+                    });
+                    
+                    try {
+                        while (true) {
+                            // Check if aborted before reading
+                            if (currentAbortController.signal.aborted) {
+                                await reader.cancel();
+                                // Remove the streaming bubble entirely when stopped
+                                if (streamingBubble && streamingBubble.parentNode) {
+                                    streamingBubble.parentNode.remove();
                                 }
-                                try {
-                                    const parsed = JSON.parse(data);
-                                    if (parsed.error) {
-                                        updateStreamingMessage(streamingBubble, '❌ Error: ' + parsed.error);
+                                abortHandled = true;
+                                break;
+                            }
+                            
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            
+                            buffer += decoder.decode(value, { stream: true });
+                            const lines = buffer.split('\n');
+                            buffer = lines.pop(); // Keep incomplete line in buffer
+                            
+                            for (const line of lines) {
+                                if (line.startsWith('data: ')) {
+                                    const data = line.slice(6);
+                                    if (data === '[DONE]') {
                                         break;
                                     }
-                                    
-                                    // Store fetched issues data for download BEFORE formatting message
-                                    if (parsed.data && Array.isArray(parsed.data) && parsed.data.length > 0) {
-                                        lastFetchedIssues = parsed.data;
-                                        lastFetchedTracker = parsed.tracker_used || 'export';
-                                        console.log('Stored issues for download:', lastFetchedIssues.length, 'from', lastFetchedTracker);
+                                    try {
+                                        const parsed = JSON.parse(data);
+                                        if (parsed.error) {
+                                            updateStreamingMessage(streamingBubble, '❌ Error: ' + parsed.error);
+                                            break;
+                                        }
+                                        
+                                        // Store fetched issues data for download BEFORE formatting message
+                                        if (parsed.data && Array.isArray(parsed.data) && parsed.data.length > 0) {
+                                            lastFetchedIssues = parsed.data;
+                                            lastFetchedTracker = parsed.tracker_used || 'export';
+                                            console.log('Stored issues for download:', lastFetchedIssues.length, 'from', lastFetchedTracker);
+                                        }
+                                        
+                                        // Handle intermediate steps
+                                        if (parsed.step) {
+                                            updateIntermediateSteps(streamingBubble, parsed.step, parsed.message);
+                                        } else if (parsed.chunk) {
+                                            fullMessage += parsed.chunk;
+                                            updateStreamingMessage(streamingBubble, fullMessage, parsed.metadata);
+                                        } else if (parsed.message) {
+                                            fullMessage = parsed.message;
+                                            updateStreamingMessage(streamingBubble, fullMessage, parsed.metadata);
+                                        }
+                                    } catch (e) {
+                                        console.error('Parse error:', e);
                                     }
-                                    
-                                    // Handle intermediate steps
-                                    if (parsed.step) {
-                                        updateIntermediateSteps(streamingBubble, parsed.step, parsed.message);
-                                    } else if (parsed.chunk) {
-                                        fullMessage += parsed.chunk;
-                                        updateStreamingMessage(streamingBubble, fullMessage, parsed.metadata);
-                                    } else if (parsed.message) {
-                                        fullMessage = parsed.message;
-                                        updateStreamingMessage(streamingBubble, fullMessage, parsed.metadata);
-                                    }
-                                } catch (e) {
-                                    console.error('Parse error:', e);
                                 }
                             }
+                        }
+                    } catch (streamError) {
+                        // Handle abort during streaming - cancel reader and exit silently
+                        if (streamError.name === 'AbortError') {
+                            try {
+                                await reader.cancel();
+                            } catch (e) {
+                                // Ignore cancel errors
+                            }
+                            // Remove the streaming bubble entirely when stopped (including intermediate steps)
+                            if (streamingBubble && streamingBubble.parentNode) {
+                                streamingBubble.parentNode.remove();
+                            }
+                            abortHandled = true;
+                        } else {
+                            throw streamError;
                         }
                     }
                 } else {
@@ -1051,12 +1143,21 @@
                 loadSessions();
                 
             } catch (error) {
-                typingMsg.remove();
-                addMessage('❌ Error: ' + error.message, 'agent');
+                // Only remove typing indicator if it still exists (streaming case handles its own bubble)
+                if (typingMsg.parentNode) {
+                    typingMsg.remove();
+                }
+                if (error.name === 'AbortError') {
+                    // Silent stop - no message needed
+                } else {
+                    addMessage('❌ Error: ' + error.message, 'agent');
+                }
             }
             
             isProcessing = false;
             sendButton.disabled = false;
+            currentAbortController = null;
+            updateButtonVisibility(false);
             messageInput.focus();
         }
         

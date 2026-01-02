@@ -706,6 +706,48 @@ class TfsMCPServer:
             print(f"Failed to delete attachment from work item {work_item_id}: {str(e)}")
             return False
     
+    def download_attachment(self, attachment_url: str) -> Optional[bytes]:
+        """
+        Download attachment content from TFS/Azure DevOps.
+        
+        Args:
+            attachment_url: URL of the attachment to download
+            
+        Returns:
+            Attachment content as bytes, or None if failed
+        """
+        try:
+            response = requests.get(attachment_url, auth=self.auth, headers=self.headers, verify=False)
+            response.raise_for_status()
+            return response.content
+        except Exception as e:
+            print(f"Failed to download attachment from {attachment_url}: {str(e)}")
+            return None
+    
+    def get_attachment_auth_header(self) -> Optional[Dict[str, str]]:
+        """
+        Get authentication header for downloading TFS attachments.
+        
+        Returns:
+            Dictionary with Authorization header, or None if not available
+        """
+        try:
+            if self.auth:
+                # Use Basic auth for TFS
+                import base64
+                if isinstance(self.auth, tuple):
+                    username, password = self.auth
+                    credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+                    return {"Authorization": f"Basic {credentials}"}
+                elif hasattr(self.auth, '__call__'):
+                    # HTTPBasicAuth object
+                    credentials = base64.b64encode(f":{self.pat}".encode()).decode()
+                    return {"Authorization": f"Basic {credentials}"}
+            return None
+        except Exception as e:
+            print(f"Failed to get TFS auth header: {str(e)}")
+            return None
+    
     # ==================== WORK ITEM LINKS ====================
     
     def get_work_item_links(self, work_item_id: int) -> List[Dict[str, Any]]:

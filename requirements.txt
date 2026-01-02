@@ -9,3 +9,4 @@ opensearch-py>=2.4.0
 sentence-transformers>=2.2.0
 numpy>=1.24.0
 torch>=2.0.0
+flask>=2.3.0
