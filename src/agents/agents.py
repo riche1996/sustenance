@@ -3183,14 +3183,13 @@ class SuperAgent:
         if session_id not in self.conversation_history:
             self.conversation_history[session_id] = []
         
-        # Use Claude LLM to understand intent and extract parameters
+        # Use LLM service to understand intent and extract parameters
         try:
-            from anthropic import Anthropic
+            from src.services.llm_service import get_agent_llm
             import json
             
-            # Create HTTP client with SSL verification disabled
-            http_client = httpx.Client(verify=False, timeout=60.0)
-            client = Anthropic(api_key=Config.ANTHROPIC_API_KEY, http_client=http_client)
+            # Get the agent LLM provider (Azure OpenAI or Anthropic based on config)
+            llm_provider = get_agent_llm()
             
             # Get list of actually available trackers
             available_trackers = [k for k in ["jira", "tfs", "github"] if k in self.agents]
@@ -3479,22 +3478,20 @@ Examples of INCORRECT responses:
 
 """
 
-            # Build messages with conversation history
-            messages = self.conversation_history[session_id].copy()
-            messages.append({"role": "user", "content": message})
+            # Build messages with conversation history (OpenAI-compatible format)
+            llm_messages = [{"role": "system", "content": system_prompt}]
+            llm_messages.extend(self.conversation_history[session_id])
+            llm_messages.append({"role": "user", "content": message})
             
-            response = client.messages.create(
-                model=Config.CLAUDE_MODEL,
+            # Call the LLM provider (Azure OpenAI or Anthropic)
+            llm_text = llm_provider.chat_completion(
+                messages=llm_messages,
                 max_tokens=1000,
-                system=system_prompt,
-                messages=messages
+                temperature=0.3
             )
             
-            # Parse Claude's response
-            llm_text = response.content[0].text.strip()
-            
-            # DEBUG: Print what Claude returns
-            print(f"DEBUG Claude response: {llm_text[:500]}", flush=True)
+            # DEBUG: Print what LLM returns
+            print(f"DEBUG LLM response: {llm_text[:500]}", flush=True)
             
             # Check if response is JSON (action) or plain text (conversational)
             try:

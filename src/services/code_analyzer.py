@@ -1,10 +1,9 @@
-"""Code analysis agent using Claude SDK with RAG-based code retrieval."""
+"""Code analysis agent using LLM service with RAG-based code retrieval."""
 import os
 import ssl
 import httpx
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
-from anthropic import Anthropic
 from src.config import Config
 
 # Type alias for progress callback
@@ -22,7 +21,7 @@ class CodeFile:
 
 
 class CodeAnalysisAgent:
-    """Agent for analyzing code using Claude with RAG-based code retrieval.
+    """Agent for analyzing code using LLM with RAG-based code retrieval.
     
     This agent supports two modes:
     1. Traditional Mode: Scans all files in the repository (good for small repos)
@@ -32,7 +31,11 @@ class CodeAnalysisAgent:
     - Uses CodeSearchService to find relevant code chunks
     - Combines semantic search with symbol-based search
     - Integrates historical context from similar issues
-    - Only sends relevant code snippets to Claude (not entire files)
+    - Only sends relevant code snippets to LLM (not entire files)
+    
+    LLM Provider:
+    - Uses Claude (Anthropic) by default for best code understanding
+    - Configurable via CODE_ANALYSIS_LLM environment variable
     """
     
     def __init__(self, use_rag: bool = True):
@@ -41,13 +44,10 @@ class CodeAnalysisAgent:
         Args:
             use_rag: If True, uses RAG-based code retrieval (recommended for large repos)
         """
-        # Create HTTP client with SSL verification disabled and timeout
-        http_client = httpx.Client(verify=False, timeout=60.0)
-        self.client = Anthropic(
-            api_key=Config.ANTHROPIC_API_KEY,
-            http_client=http_client
-        )
-        self.model = Config.CLAUDE_MODEL
+        # Use LLM service for code analysis (defaults to Claude)
+        from src.services.llm_service import get_code_analysis_llm
+        self._llm_provider = get_code_analysis_llm()
+        
         self.use_rag = use_rag
         self.progress_callback: Optional[ProgressCallback] = None
         
@@ -260,17 +260,16 @@ For each relevant finding:
 If no relevant code is found in these files, state "NO ISSUES FOUND IN THIS BATCH"."""
 
         try:
-            self._report_progress(f"  Sending {len(code_files)} files to Claude for analysis...")
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
+            self._report_progress(f"  Sending {len(code_files)} files to LLM for analysis...")
+            result = self._llm_provider.chat_completion(
                 messages=[
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                max_tokens=4096
             )
             
-            analysis_text = response.content[0].text
-            self._report_progress(f"  ✓ Received analysis from Claude")
+            analysis_text = result.get("content", "")
+            self._report_progress(f"  ✓ Received analysis from LLM")
             
             # Parse the response into structured findings
             findings = self._parse_analysis(analysis_text, code_files)
@@ -278,7 +277,7 @@ If no relevant code is found in these files, state "NO ISSUES FOUND IN THIS BATC
             return findings
             
         except Exception as e:
-            self._report_progress(f"Error during Claude API call: {str(e)}")
+            self._report_progress(f"Error during LLM API call: {str(e)}")
             return [{
                 "file": "ERROR",
                 "lines": "N/A",
@@ -402,19 +401,18 @@ If no relevant code is found in these files, state "NO ISSUES FOUND IN THIS BATC
             historical_context=historical_context
         )
         
-        # Step 3: Send to Claude for analysis
-        print("\n🤖 Sending to Claude for analysis...")
+        # Step 3: Send to LLM for analysis
+        print("\n🤖 Sending to LLM for code analysis...")
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
+            result = self._llm_provider.chat_completion(
                 messages=[
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                max_tokens=4096
             )
             
-            analysis_text = response.content[0].text
-            print(f"  ✓ Received analysis from Claude")
+            analysis_text = result.get("content", "")
+            print(f"  ✓ Received analysis from LLM")
             
             # Parse the response
             findings = self._parse_rag_analysis(analysis_text)
@@ -431,7 +429,7 @@ If no relevant code is found in these files, state "NO ISSUES FOUND IN THIS BATC
             }
             
         except Exception as e:
-            self._report_progress(f"Error during Claude API call: {str(e)}")
+            self._report_progress(f"Error during LLM API call: {str(e)}")
             return {
                 "bug_key": bug_key,
                 "status": "error",

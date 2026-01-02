@@ -29,9 +29,20 @@ class Config:
     # Bug Tracking System Selection
     BUG_TRACKER = os.getenv("BUG_TRACKER", "jira")  # jira, tfs, or github
     
-    # Claude API Configuration
+    # Claude API Configuration (for code analysis)
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+    
+    # Azure OpenAI Configuration (for agent routing/chat)
+    AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY", "")
+    AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
+    AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+    
+    # LLM Provider Selection
+    # "azure" = Azure OpenAI, "anthropic" = Claude, "openai" = OpenAI
+    AGENT_LLM_PROVIDER = os.getenv("AGENT_LLM_PROVIDER", "anthropic")  # For agent/chat
+    CODE_ANALYSIS_LLM = os.getenv("CODE_ANALYSIS_LLM", "anthropic")    # For code analysis
     
     # Repository Configuration
     REPO_PATH = Path(os.getenv("REPO_PATH", "./code_files"))
@@ -51,10 +62,18 @@ class Config:
     @classmethod
     def validate(cls):
         """Validate that required configuration is present."""
-        # Always required
-        required_vars = [
-            ("ANTHROPIC_API_KEY", cls.ANTHROPIC_API_KEY),
-        ]
+        required_vars = []
+        
+        # LLM provider requirements
+        if cls.AGENT_LLM_PROVIDER == "anthropic" or cls.CODE_ANALYSIS_LLM == "anthropic":
+            required_vars.append(("ANTHROPIC_API_KEY", cls.ANTHROPIC_API_KEY))
+        
+        if cls.AGENT_LLM_PROVIDER == "azure":
+            required_vars.extend([
+                ("AZURE_OPENAI_ENDPOINT", cls.AZURE_OPENAI_ENDPOINT),
+                ("AZURE_OPENAI_KEY", cls.AZURE_OPENAI_KEY),
+                ("AZURE_OPENAI_DEPLOYMENT", cls.AZURE_OPENAI_DEPLOYMENT),
+            ])
         
         # Bug tracker specific requirements
         if cls.BUG_TRACKER == "jira":

@@ -1,16 +1,14 @@
-"""Simple chat service for sending queries to Anthropic Claude."""
-import httpx
-from anthropic import Anthropic
-from src.config import Config
+"""Simple chat service using LLM service abstraction."""
+from src.services.llm_service import get_agent_llm
 
 
 def chat(query: str, model: str = None, max_tokens: int = 1024) -> str:
     """
-    Send a chat query to Anthropic Claude and get a response.
+    Send a chat query to the configured agent LLM and get a response.
     
     Args:
         query: The user's question or message
-        model: Claude model to use (defaults to Config.CLAUDE_MODEL)
+        model: Model to use (optional, uses default from config)
         max_tokens: Maximum tokens in response (default 1024)
         
     Returns:
@@ -20,32 +18,25 @@ def chat(query: str, model: str = None, max_tokens: int = 1024) -> str:
         >>> response = chat("What is Python?")
         >>> print(response)
     """
-    # Create HTTP client with SSL verification disabled for corporate environments
-    http_client = httpx.Client(verify=False, timeout=60.0)
+    llm_provider = get_agent_llm()
     
-    client = Anthropic(
-        api_key=Config.ANTHROPIC_API_KEY,
-        http_client=http_client
-    )
-    
-    response = client.messages.create(
-        model=model or Config.CLAUDE_MODEL,
-        max_tokens=max_tokens,
+    result = llm_provider.chat_completion(
         messages=[
             {"role": "user", "content": query}
-        ]
+        ],
+        max_tokens=max_tokens
     )
     
-    return response.content[0].text
+    return result.get("content", "")
 
 
 def chat_with_history(messages: list, model: str = None, max_tokens: int = 1024, system: str = None) -> str:
     """
-    Send a chat with conversation history to Anthropic Claude.
+    Send a chat with conversation history to the configured agent LLM.
     
     Args:
         messages: List of message dicts [{"role": "user/assistant", "content": "..."}]
-        model: Claude model to use (defaults to Config.CLAUDE_MODEL)
+        model: Model to use (optional, uses default from config)
         max_tokens: Maximum tokens in response (default 1024)
         system: Optional system prompt
         
@@ -60,25 +51,15 @@ def chat_with_history(messages: list, model: str = None, max_tokens: int = 1024,
         ... ]
         >>> response = chat_with_history(messages)
     """
-    http_client = httpx.Client(verify=False, timeout=60.0)
+    llm_provider = get_agent_llm()
     
-    client = Anthropic(
-        api_key=Config.ANTHROPIC_API_KEY,
-        http_client=http_client
+    result = llm_provider.chat_completion(
+        messages=messages,
+        max_tokens=max_tokens,
+        system=system
     )
     
-    kwargs = {
-        "model": model or Config.CLAUDE_MODEL,
-        "max_tokens": max_tokens,
-        "messages": messages
-    }
-    
-    if system:
-        kwargs["system"] = system
-    
-    response = client.messages.create(**kwargs)
-    
-    return response.content[0].text
+    return result.get("content", "")
 
 
 # Quick test
