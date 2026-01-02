@@ -30,19 +30,19 @@ class Config:
     BUG_TRACKER = os.getenv("BUG_TRACKER", "jira")  # jira, tfs, or github
     
     # Claude API Configuration (for code analysis)
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514").strip()
     
     # Azure OpenAI Configuration (for agent routing/chat)
-    AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-    AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY", "")
-    AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
-    AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+    AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY", "").strip()
+    AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4").strip()
+    AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview").strip()
     
     # LLM Provider Selection
     # "azure" = Azure OpenAI, "anthropic" = Claude, "openai" = OpenAI
-    AGENT_LLM_PROVIDER = os.getenv("AGENT_LLM_PROVIDER", "anthropic")  # For agent/chat
-    CODE_ANALYSIS_LLM = os.getenv("CODE_ANALYSIS_LLM", "anthropic")    # For code analysis
+    AGENT_LLM_PROVIDER = os.getenv("AGENT_LLM_PROVIDER", "anthropic").strip()  # For agent/chat
+    CODE_ANALYSIS_LLM = os.getenv("CODE_ANALYSIS_LLM", "anthropic").strip()    # For code analysis
     
     # Repository Configuration
     REPO_PATH = Path(os.getenv("REPO_PATH", "./code_files"))
